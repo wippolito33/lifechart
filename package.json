@@ -1,0 +1,9 @@
+{
+  "name": "lifechart",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0",
+    "@netlify/functions": "^2.8.0"
+  }
+}
