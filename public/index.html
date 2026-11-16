@@ -64,9 +64,13 @@
  .chart{width:100%;margin:8px 0 4px;touch-action:pan-y} .chart text{font-size:11px;fill:#7790ab}
  .hist{margin-top:14px;max-height:340px;overflow-y:auto;border-top:1px solid #dbe8f7}
  .hist div{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid #f0f4fa;font-size:14px} .hist span:last-child{font-weight:600}
+ #updateBar{position:sticky;top:0;z-index:40;background:#0b2e59;color:#fff;padding:10px 16px;display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;font-size:14px}
+ #updateBar.hidden{display:none}
+ #updateBar button{background:#fff;color:#0b2e59;margin:0;padding:6px 14px;font-weight:700}
  .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
  @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
+<div id="updateBar" class="hidden"><span>LifeChart has been updated. Reload to get the latest version.</span><button id="reloadNow">Reload now</button></div>
 <header><div class="brand"><svg width="38" height="38" viewBox="0 0 48 48" aria-label="LifeChart logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b2e59"/><stop offset="1" stop-color="#5aa9e6"/></linearGradient></defs><rect width="48" height="48" rx="12" fill="url(#lg)"/><path d="M6 26h9l4-9 6 17 5-12 3 4h9" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg><div><span>Life<b>Chart</b></span><small>Your health records for life, for you and your doctor</small></div></div><div class="hdr-right"><span id="hdrAvatar" class="avatar hidden" style="width:36px;height:36px;font-size:14px" title="Your profile"></span><button id="logout" class="hidden">Lock</button></div></header>
 <main>
 
@@ -154,6 +158,8 @@
 </div>
 </main>
 <script>
+// Replaced with the commit ID at deploy time. Lets an open page notice it's out of date.
+const APP_VERSION = "__APP_VERSION__";
 const CHUNK = 3 * 1024 * 1024, enc = new TextEncoder(), dec = new TextDecoder(), $ = id => document.getElementById(id);
 const STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"];
 const CATEGORIES = ["Labs", "Imaging", "MRI", "Doctor's records", "Other"];
@@ -481,7 +487,31 @@ $("applyBtn").onclick = () => {
   pending.forEach(item => { if (c) item.category = c; if (d) item.doctor = d; if (t) item.date = t; });
   renderRows();
 };
+// ---------- staying up to date ----------
+// A tab left open (especially on a phone) can keep running an old version after an update.
+let outdated = false;
+async function checkVersion() {
+  if (!/^[0-9a-f]{7,}$/.test(APP_VERSION)) return false; // not a deployed build (local testing)
+  try {
+    const live = (await (await fetch("/version.txt", { cache: "no-store" })).text()).trim();
+    if (/^[0-9a-f]{7,}$/.test(live) && live !== APP_VERSION) {
+      outdated = true;
+      $("updateBar").classList.remove("hidden");
+    }
+  } catch {}
+  return outdated;
+}
+// Call before anything that saves data in a way an old version would get wrong
+async function mustBeCurrent() {
+  if (await checkVersion()) { alert("LifeChart was updated since this page was opened. Tap \"Reload now\" at the top, sign in again, then try once more."); return false; }
+  return true;
+}
+$("reloadNow").onclick = () => location.reload();
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkVersion(); });
+setInterval(checkVersion, 10 * 60 * 1000); checkVersion();
+
 $("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
+  if (!(await mustBeCurrent())) return;
   if (!pending.length) return alert("Choose a file first.");
   const missing = pending.filter(p => !p.category);
   if (missing.length) { renderRows(); [...$("fileRows").children].forEach((r, i) => r.classList.toggle("missing", !pending[i].category)); return alert(`Choose a record type for ${missing.length === 1 ? missing[0].file.name : missing.length + " files"}.`); }
@@ -557,6 +587,7 @@ async function postSummary(body) {
   return (await r.json()).text;
 }
 $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
+  if (!(await mustBeCurrent())) return;
   if (!index.length && !apple) return alert("Add a record or import Apple Health data first.");
   const ok = confirm("To write your summary, your records will be unlocked on this device and sent to an AI service (Anthropic's Claude) to be read. They are not stored there by LifeChart. The finished summary is saved encrypted with your records.\n\nContinue?");
   if (!ok) return;
@@ -697,6 +728,7 @@ function normalize(res) {
 const KINDS = ["Labs", "Medications", "Conditions", "Allergies", "Immunizations", "Procedures", "Reports", "Vitals"];
 
 $("appleImport").onclick = () => busy($("appleImport"), "Importing...", async () => {
+  if (!(await mustBeCurrent())) return;
   const file = $("appleFile").files[0];
   if (!file) return alert("Choose your Apple Health export.zip first.");
   if (!window.fflate) await loadScript("https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js");
