@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LifeChart</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:0;background:#f5f9fe;color:#0b2e59}
+ header{background:#fff;color:#0b2e59;border-bottom:3px solid #1f6fb2;padding:12px 20px;display:flex;justify-content:space-between;align-items:center}
+ main{max-width:900px;margin:20px auto;padding:0 14px}
+ .card{background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;border:1px solid #dbe8f7;box-shadow:0 2px 10px #1f6fb21a}
+ input,button{font:inherit;padding:9px;margin:4px 0;border-radius:6px;border:1px solid #c9dcf2}
+ input{width:100%;box-sizing:border-box} button{background:linear-gradient(#2a86d1,#1f6fb2);color:#fff;cursor:pointer;border:0}
+ .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px} h3{margin:18px 0 6px;color:#2e4a7d}
+ .rec{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding:8px 0;gap:8px}
+ .tag{background:#e3f0fc;color:#1f6fb2;border-radius:10px;padding:2px 8px;font-size:12px;margin-right:4px}
+ .src{font-size:12px;color:#777} .hidden{display:none} #status{color:#1f6fb2;font-size:14px}
+ .brand{display:flex;align-items:center;gap:10px;font-size:21px;font-weight:700;letter-spacing:.3px}
+ .brand b{color:#1f6fb2}
+</style></head><body>
+<header><div class="brand"><svg width="38" height="38" viewBox="0 0 48 48" aria-label="LifeChart logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b2e59"/><stop offset="1" stop-color="#5aa9e6"/></linearGradient></defs><rect width="48" height="48" rx="12" fill="url(#lg)"/><path d="M6 26h9l4-9 6 17 5-12 3 4h9" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Life<b>Chart</b></span></div><button id="logout" class="hidden">Lock</button></header>
+<main>
+<div id="login" class="card">
+ <h2>Unlock your records</h2>
+ <p style="margin-top:-8px;color:#2e4a7d"><em>Your health story, all in one place.</em></p>
+ <input id="user" placeholder="Username" autocomplete="username">
+ <input id="pass" type="password" placeholder="Passphrase (12+ characters)" autocomplete="current-password">
+ <button id="unlock">Unlock / Create vault</button>
+ <p class="src">Your passphrase never leaves this device. If it is lost, your records cannot be recovered.</p>
+</div>
+<div id="app" class="hidden">
+ <div class="card">
+  <h2>Add a record</h2>
+  <input id="file" type="file" multiple>
+  <div class="grid"><input id="doctor" placeholder="Doctor or facility"><input id="date" type="date"></div>
+  <input id="tags" placeholder="Tags, comma separated (labs, imaging, MRI)">
+  <input id="notes" placeholder="Notes (optional)">
+  <button id="upload">Encrypt &amp; upload</button> <span id="status"></span>
+ </div>
+ <div class="card"><input id="search" placeholder="Search by name, doctor, tag or notes"><div id="list"></div></div>
+</div>
+</main>
+<script>
+const CHUNK = 3 * 1024 * 1024, enc = new TextEncoder(), $ = id => document.getElementById(id);
+let key, auth, index = [];
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
+
+async function derive(user, pass) {
+  const base = await crypto.subtle.importKey("raw", enc.encode(pass), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: enc.encode("healthvault:" + user.toLowerCase()), iterations: 600000, hash: "SHA-256" }, base, 512);
+  key = await crypto.subtle.importKey("raw", bits.slice(0, 32), "AES-GCM", false, ["encrypt", "decrypt"]);
+  auth = { "x-vault": hex(await crypto.subtle.digest("SHA-256", enc.encode("vault:" + user.toLowerCase()))), "x-token": hex(bits.slice(32)) };
+}
+async function seal(data) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
+  const out = new Uint8Array(12 + ct.byteLength); out.set(iv); out.set(new Uint8Array(ct), 12); return out;
+}
+const open = buf => crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, key, buf.slice(12));
+const api = (path, opts = {}) => fetch("/api/" + path, { ...opts, headers: { ...auth, ...(opts.headers || {}) } });
+const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
+
+async function saveIndex() { await api("index", { method: "PUT", body: toB64(await seal(enc.encode(JSON.stringify(index)))) }); }
+async function loadIndex() {
+  const r = await api("index"); if (r.status === 404) { index = []; return; }
+  const b = Uint8Array.from(atob(await r.text()), c => c.charCodeAt(0));
+  index = JSON.parse(new TextDecoder().decode(await open(b)));
+}
+
+$("unlock").onclick = async () => {
+  const u = $("user").value.trim(), p = $("pass").value;
+  if (!u || p.length < 12) return alert("Enter a username and a passphrase of at least 12 characters.");
+  $("unlock").textContent = "Unlocking..."; await derive(u, p);
+  const r = await api("setup", { method: "POST" });
+  $("unlock").textContent = "Unlock / Create vault";
+  if (r.status === 409) return alert("Wrong passphrase for this username.");
+  try { await loadIndex(); } catch { return alert("Could not unlock. Check your passphrase."); }
+  $("pass").value = ""; $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("logout").classList.remove("hidden"); render();
+};
+$("logout").onclick = () => location.reload();
+
+$("upload").onclick = async () => {
+  const files = [...$("file").files]; if (!files.length) return alert("Choose a file first.");
+  for (const f of files) {
+    const id = crypto.randomUUID(), chunks = Math.ceil(f.size / CHUNK) || 1;
+    for (let n = 0; n < chunks; n++) {
+      $("status").textContent = `Encrypting ${f.name}: ${Math.round(n / chunks * 100)}%`;
+      const part = await f.slice(n * CHUNK, (n + 1) * CHUNK).arrayBuffer();
+      const r = await api(`file/${id}/${n}`, { method: "PUT", body: await seal(part) });
+      if (!r.ok) { $("status").textContent = "Upload failed."; return; }
+    }
+    index.push({ id, name: f.name, type: f.type, size: f.size, chunks,
+      doctor: $("doctor").value.trim(), date: $("date").value,
+      tags: $("tags").value.split(",").map(t => t.trim()).filter(Boolean),
+      notes: $("notes").value.trim(), source: "Uploaded by patient", added: new Date().toISOString() });
+    await saveIndex();
+  }
+  $("status").textContent = "Saved and encrypted."; $("file").value = ""; render();
+};
+
+async function view(rec) {
+  const parts = [];
+  for (let n = 0; n < rec.chunks; n++) {
+    const r = await api(`file/${rec.id}/${n}`); parts.push(await open(new Uint8Array(await r.arrayBuffer())));
+  }
+  const url = URL.createObjectURL(new Blob(parts, { type: rec.type || "application/octet-stream" }));
+  if (/pdf|image/.test(rec.type)) window.open(url); else Object.assign(document.createElement("a"), { href: url, download: rec.name }).click();
+}
+async function remove(rec) {
+  if (!confirm(`Delete ${rec.name}?`)) return;
+  await api(`file/${rec.id}`, { method: "DELETE" });
+  index = index.filter(r => r.id !== rec.id); await saveIndex(); render();
+}
+
+function render() {
+  const q = $("search").value.toLowerCase(), list = $("list"); list.innerHTML = "";
+  const hits = index.filter(r => [r.name, r.doctor, r.notes, ...r.tags].join(" ").toLowerCase().includes(q))
+    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  let year;
+  for (const r of hits) {
+    const y = (r.date || "Undated").slice(0, 4);
+    if (y !== year) { year = y; list.insertAdjacentHTML("beforeend", `<h3>${y}</h3>`); }
+    const row = document.createElement("div"); row.className = "rec";
+    row.innerHTML = `<div><strong></strong><br><span class="src"></span><br></div><div><button>Open</button> <button>Delete</button></div>`;
+    row.querySelector("strong").textContent = r.name;
+    row.querySelector(".src").textContent = `${r.doctor || "No doctor"} | ${r.date || "No date"} | ${r.source}`;
+    r.tags.forEach(t => { const s = document.createElement("span"); s.className = "tag"; s.textContent = t; row.firstChild.appendChild(s); });
+    const [o, d] = row.querySelectorAll("button"); o.onclick = () => view(r); d.onclick = () => remove(r);
+    list.appendChild(row);
+  }
+  if (!hits.length) list.innerHTML = "<p class='src'>No records yet.</p>";
+}
+$("search").oninput = render;
+</script></body></html>
