@@ -61,12 +61,13 @@ Follow-up: recommendations or next steps
 Report only what the document says. Do not guess or add advice. Keep it under 250 words.`;
 
 const OVERALL_PROMPT = `You are helping a patient keep an organized personal health record.
-Below are the patient's profile and short summaries of each record in their file. Write a clear, well-organized health summary the patient could read and share with a doctor. Use these markdown sections (## headings, - bullets), skipping any with nothing to report:
+Below are the patient's profile, short summaries of each record in their file, and possibly Apple Health data (device trends and provider records). Write a clear, well-organized health summary the patient could read and share with a doctor. Use these markdown sections (## headings, - bullets), skipping any with nothing to report:
 ## Overview
 ## Conditions and diagnoses
 ## Current medications
 ## Allergies
 ## Recent test results (flag anything out of range; include dates)
+## Health trends (from Apple Health, if present: notable changes over time in heart rate, blood pressure, weight, activity, sleep)
 ## Imaging and procedures
 ## Care team
 ## Timeline (most recent first, one line each: date, what happened, source file)
@@ -103,7 +104,8 @@ async function summarize(req: Request) {
     if (b.mode === "overall") {
       const recs = (b.records || []).map((r: any) =>
         `### ${r.name} (${r.category || "record"}, ${r.date || "undated"}, ${r.doctor || "no doctor listed"})\n${r.summary || "(not summarized)"}`).join("\n\n");
-      const input = `PATIENT PROFILE\n${JSON.stringify(b.profile || {}, null, 1)}\n\nRECORD SUMMARIES\n${recs || "(none)"}\n\n${OVERALL_PROMPT}`;
+      const appleData = typeof b.apple === "string" && b.apple ? `\n\nAPPLE HEALTH DATA (exported from the patient's iPhone: monthly averages from their devices, plus records their providers shared)\n${b.apple.slice(0, 150000)}` : "";
+      const input = `PATIENT PROFILE\n${JSON.stringify(b.profile || {}, null, 1)}\n\nRECORD SUMMARIES\n${recs || "(none)"}${appleData}\n\n${OVERALL_PROMPT}`;
       const text = await callClaude([{ type: "text", text: input }], 3000);
       return Response.json({ text });
     }
@@ -165,7 +167,7 @@ export default async (req: Request) => {
   if (route === "summarize" && req.method === "POST") return summarize(req);
 
   // Encrypted profile, record list and saved health summary
-  if (route === "profile" || route === "index" || route === "summary") {
+  if (route === "profile" || route === "index" || route === "summary" || route === "apple") {
     if (req.method === "GET") {
       const v = await s.get(`${vault}/${route}`);
       return v === null ? bad("Not found", 404) : new Response(v);

@@ -33,6 +33,20 @@
  .note{background:#fff8e6;border:1px solid #f3dfa6;color:#6b5310;border-radius:8px;padding:8px 10px;font-size:13px;margin:8px 0}
  .ghost{background:#fff;color:#1f6fb2;border:1px solid #c9dcf2}
  @media print{header,#app>.card:not(#summaryCard),#summaryCard button,.row button{display:none!important}body{background:#fff}.card{box-shadow:none;border:0}}
+ .frow{border:1px solid #dbe8f7;border-radius:10px;padding:8px 10px;margin:8px 0;background:#fbfdff}
+ .frow.missing{border-color:#c62828}
+ .fname{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:600;font-size:14px;word-break:break-all}
+ .fname button.x{background:#fff;color:#c62828;border:1px solid #f1c6c6;padding:4px 10px;flex-shrink:0}
+ #applyAll{background:#f0f6fd;border-radius:10px;padding:4px 10px 10px;margin:8px 0}
+ .trend{display:grid;grid-template-columns:1.4fr 1fr 1fr 130px;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #f0f4fa;font-size:14px}
+ .trend.head{font-size:12px;color:#5b7493;border-bottom:1px solid #dbe8f7}
+ .trend b{font-size:15px} .trend svg{width:130px;height:30px}
+ details.cl{border:1px solid #dbe8f7;border-radius:10px;margin:8px 0;padding:6px 10px;background:#fbfdff}
+ details.cl summary{cursor:pointer;font-weight:600;color:#0b2e59}
+ .cli{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid #f0f4fa;font-size:14px}
+ .cli .d{color:#5b7493;font-size:12px;white-space:nowrap} .flag{color:#c62828;font-weight:700}
+ progress{width:100%;height:10px;margin:6px 0}
+ @media(max-width:600px){.trend{grid-template-columns:1.2fr 1fr 90px}.trend .avg{display:none}.trend svg{width:90px}}
  .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
  @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
@@ -90,15 +104,34 @@
  </div>
  <div class="card">
   <h2>Add a record</h2>
+  <label for="file">Choose one or more files. You can pick more to add to the list.</label>
   <input id="file" type="file" multiple>
-  <div class="upgrid">
-   <div><label for="category">Record type</label><select id="category"><option value="">Choose a type</option></select></div>
-   <div><label for="doctor">Doctor or facility</label><input id="doctor" placeholder="Doctor or facility"></div>
-   <div><label for="date">Date of record</label><input id="date" type="date"></div>
+  <div id="applyAll" class="hidden">
+   <div class="sect">Apply to all files</div>
+   <div class="upgrid">
+    <div><label for="allCat">Record type</label><select id="allCat" class="catsel"></select></div>
+    <div><label for="allDoctor">Doctor or facility</label><input id="allDoctor" placeholder="Doctor or facility"></div>
+    <div><label for="allDate">Date of record</label><input id="allDate" type="date"></div>
+   </div>
+   <button type="button" class="ghost" id="applyBtn">Apply to all</button> <span class="src">Fills every file below. You can still change any one.</span>
   </div>
-  <input id="tags" placeholder="Extra tags, comma separated (optional)">
-  <input id="notes" placeholder="Notes (optional)">
+  <div id="fileRows"></div>
+  <input id="tags" placeholder="Extra tags for these files, comma separated (optional)">
+  <input id="notes" placeholder="Notes for these files (optional)">
   <button id="upload">Encrypt &amp; upload</button> <span id="status"></span>
+ </div>
+ <div class="card" id="appleCard">
+  <div class="row"><h2>Apple Health</h2><span class="src" id="appleWhen"></span></div>
+  <details id="appleHow"><summary class="src" style="cursor:pointer">How to export from your iPhone</summary>
+   <ol class="src"><li>Open the <b>Health</b> app and tap your picture or initials at the top right.</li>
+   <li>Tap <b>Export All Health Data</b>, then <b>Export</b>. This can take a few minutes.</li>
+   <li>Save the file (export.zip) to Files or send it to your computer, then choose it below.</li></ol>
+   <p class="src">The file is unpacked on this device. Only the summaries below are saved, encrypted. The zip itself is not uploaded.</p></details>
+  <input id="appleFile" type="file" accept=".zip,application/zip">
+  <button id="appleImport">Import Apple Health data</button>
+  <progress id="appleProg" class="hidden" max="1" value="0"></progress><div id="appleStatus" class="src"></div>
+  <div id="appleTrends"></div>
+  <div id="appleClinical"></div>
  </div>
  <div class="card"><input id="search" placeholder="Search by name, type, doctor, tag or notes"><div id="list"></div></div>
 </div>
@@ -119,8 +152,9 @@ const SECTIONS = [
 const addrKeys = pre => pre ? [pre + "Street", pre + "Unit", pre + "City", pre + "State", pre + "Zip"] : ["street", "apt", "city", "state", "zip"];
 const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map(k => [k]) : f);
 const isTel = k => FIELDS.some(([key, , t]) => key === k && t === "tel");
-CATEGORIES.forEach(c => $("category").insertAdjacentHTML("beforeend", `<option>${c}</option>`));
-let masterKey, auth, index = [], profile = {}, summary = null, pendingCode = "", pendingUser = "";
+const catOptions = () => `<option value="">Choose a type</option>` + CATEGORIES.map(c => `<option>${c}</option>`).join("");
+$("allCat").innerHTML = catOptions();
+let masterKey, auth, index = [], profile = {}, summary = null, apple = null, pendingCode = "", pendingUser = "";
 
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
@@ -225,7 +259,7 @@ async function busy(btn, label, fn) {
   finally { btn.disabled = false; btn.textContent = t; }
 }
 async function enterApp() {
-  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary();
+  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); renderApple();
   renderProfile(); render(); show("app");
 }
 
@@ -357,10 +391,45 @@ $("saveProfile").onclick = () => busy($("saveProfile"), "Saving...", async () =>
 });
 
 // Records
+// ---------- files waiting to upload, each with its own details ----------
+let pending = [];
+const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+function renderRows() {
+  const box = $("fileRows"); box.innerHTML = "";
+  pending.forEach((item, i) => {
+    const row = document.createElement("div"); row.className = "frow";
+    row.innerHTML = `<div class="fname"><span></span><button type="button" class="x" title="Remove">✕</button></div>
+     <div class="upgrid">
+      <div><label>Record type</label><select class="catsel">${catOptions()}</select></div>
+      <div><label>Doctor or facility</label><input placeholder="Doctor or facility"></div>
+      <div><label>Date of record</label><input type="date"></div>
+     </div>`;
+    row.querySelector(".fname span").textContent = `${item.file.name} · ${fmtSize(item.file.size)}`;
+    const [cat] = row.querySelectorAll("select"), [doc, date] = row.querySelectorAll("input");
+    cat.value = item.category; doc.value = item.doctor; date.value = item.date;
+    cat.onchange = () => { item.category = cat.value; row.classList.toggle("missing", !cat.value); };
+    doc.oninput = () => { item.doctor = doc.value; }; date.oninput = () => { item.date = date.value; };
+    row.querySelector("button").onclick = () => { pending.splice(i, 1); renderRows(); };
+    box.appendChild(row);
+  });
+  $("applyAll").classList.toggle("hidden", pending.length < 2);
+}
+$("file").onchange = () => {
+  for (const f of $("file").files) pending.push({ file: f, category: "", doctor: "", date: "" });
+  $("file").value = ""; renderRows();
+};
+$("applyBtn").onclick = () => {
+  const c = $("allCat").value, d = $("allDoctor").value.trim(), t = $("allDate").value;
+  pending.forEach(item => { if (c) item.category = c; if (d) item.doctor = d; if (t) item.date = t; });
+  renderRows();
+};
 $("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
-  const files = [...$("file").files]; if (!files.length) return alert("Choose a file first.");
-  if (!$("category").value) return alert("Choose a record type.");
-  for (const f of files) {
+  if (!pending.length) return alert("Choose a file first.");
+  const missing = pending.filter(p => !p.category);
+  if (missing.length) { renderRows(); [...$("fileRows").children].forEach((r, i) => r.classList.toggle("missing", !pending[i].category)); return alert(`Choose a record type for ${missing.length === 1 ? missing[0].file.name : missing.length + " files"}.`); }
+  const tags = $("tags").value.split(",").map(t => t.trim()).filter(Boolean), notes = $("notes").value.trim();
+  while (pending.length) {
+    const item = pending[0], f = item.file;
     const id = crypto.randomUUID(), chunks = Math.ceil(f.size / CHUNK) || 1;
     for (let n = 0; n < chunks; n++) {
       $("status").textContent = `Encrypting ${f.name}: ${Math.round(n / chunks * 100)}%`;
@@ -368,13 +437,13 @@ $("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
       const r = await api(`file/${id}/${n}`, { method: "PUT", body: await seal(masterKey, part) });
       if (!r.ok) { $("status").textContent = "Upload failed."; return; }
     }
-    index.push({ id, name: f.name, type: f.type, size: f.size, chunks, category: $("category").value,
-      doctor: $("doctor").value.trim(), date: $("date").value,
-      tags: $("tags").value.split(",").map(t => t.trim()).filter(Boolean),
-      notes: $("notes").value.trim(), source: "Uploaded by patient", added: new Date().toISOString() });
+    index.push({ id, name: f.name, type: f.type, size: f.size, chunks, category: item.category,
+      doctor: item.doctor.trim(), date: item.date, tags, notes,
+      source: "Uploaded by patient", added: new Date().toISOString() });
     await saveBlob("index", index);
+    pending.shift(); renderRows(); render();
   }
-  $("status").textContent = "Saved and encrypted."; $("file").value = ""; render();
+  $("status").textContent = "Saved and encrypted."; $("tags").value = $("notes").value = ""; render();
 });
 
 async function fileBlob(rec) {
@@ -430,7 +499,7 @@ async function postSummary(body) {
   return (await r.json()).text;
 }
 $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
-  if (!index.length) return alert("Add a record first.");
+  if (!index.length && !apple) return alert("Add a record or import Apple Health data first.");
   const ok = confirm("To write your summary, your records will be unlocked on this device and sent to an AI service (Anthropic's Claude) to be read. They are not stored there by LifeChart. The finished summary is saved encrypted with your records.\n\nContinue?");
   if (!ok) return;
   const todo = index.filter(r => !r.ai && canSummarize(r)), skipped = index.filter(r => !r.ai && !canSummarize(r));
@@ -446,10 +515,10 @@ $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
     } catch (e) { failed.push(`${rec.name} (${e.message})`); }
   }
   const have = index.filter(r => r.ai);
-  if (!have.length && !Object.values(profile).some(Boolean)) { $("sumStatus").textContent = ""; return alert("None of your records could be read. " + (failed[0] || "")); }
+  if (!have.length && !apple && !Object.values(profile).some(Boolean)) { $("sumStatus").textContent = ""; return alert("None of your records could be read. " + (failed[0] || "")); }
   $("sumStatus").textContent = "Writing your summary...";
   const { email, ...prof } = profile;
-  const text = await postSummary({ mode: "overall", profile: prof,
+  const text = await postSummary({ mode: "overall", profile: prof, apple: appleForAI(),
     records: have.map(r => ({ name: r.name, category: r.category, doctor: r.doctor, date: r.date, summary: r.ai })) });
   summary = { text, at: new Date().toISOString(), count: have.length };
   await saveBlob("summary", summary); renderSummary();
@@ -463,6 +532,230 @@ $("sumDownload").onclick = () => {
   const head = `LifeChart health summary for ${profile.fullName || profile.email || ""}\nUpdated ${new Date(summary.at).toLocaleString()}\nAI-generated from your records. It can make mistakes and is not medical advice.\n\n`;
   Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([head + summary.text], { type: "text/plain" })), download: "LifeChart-health-summary.txt" }).click();
 };
+
+// ---------- Apple Health import ----------
+// Metrics pulled from export.xml. avg = average of readings; daily = summed per day (best source), then averaged.
+const METRICS = {
+  HKQuantityTypeIdentifierRestingHeartRate: { key: "restingHR", label: "Resting heart rate", kind: "avg", dp: 0 },
+  HKQuantityTypeIdentifierHeartRate: { key: "heartRate", label: "Heart rate", kind: "avg", dp: 0 },
+  HKQuantityTypeIdentifierHeartRateVariabilitySDNN: { key: "hrv", label: "Heart rate variability", kind: "avg", dp: 0 },
+  HKQuantityTypeIdentifierBloodPressureSystolic: { key: "bpSys", label: "Blood pressure (systolic)", kind: "avg", dp: 0 },
+  HKQuantityTypeIdentifierBloodPressureDiastolic: { key: "bpDia", label: "Blood pressure (diastolic)", kind: "avg", dp: 0 },
+  HKQuantityTypeIdentifierBodyMass: { key: "weight", label: "Weight", kind: "avg", dp: 1 },
+  HKQuantityTypeIdentifierOxygenSaturation: { key: "spo2", label: "Blood oxygen", kind: "avg", dp: 1, scale: 100, unit: "%" },
+  HKQuantityTypeIdentifierBloodGlucose: { key: "glucose", label: "Blood glucose", kind: "avg", dp: 0 },
+  HKQuantityTypeIdentifierVO2Max: { key: "vo2", label: "VO2 max", kind: "avg", dp: 1 },
+  HKQuantityTypeIdentifierStepCount: { key: "steps", label: "Steps per day", kind: "daily", dp: 0, unit: "steps" },
+  HKQuantityTypeIdentifierActiveEnergyBurned: { key: "energy", label: "Active calories per day", kind: "daily", dp: 0 },
+  HKQuantityTypeIdentifierAppleExerciseTime: { key: "exercise", label: "Exercise minutes per day", kind: "daily", dp: 0, unit: "min" },
+  HKCategoryTypeIdentifierSleepAnalysis: { key: "sleep", label: "Sleep per night", kind: "sleep", dp: 1, unit: "hours" }
+};
+const ORDER = ["restingHR", "heartRate", "hrv", "bpSys", "bpDia", "weight", "spo2", "glucose", "vo2", "steps", "exercise", "energy", "sleep"];
+const attr = (tag, name) => { const m = tag.match(new RegExp(" " + name + '="([^"]*)"')); return m ? m[1] : ""; };
+const loadScript = src => new Promise((ok, fail) => { const sc = document.createElement("script"); sc.src = src; sc.onload = ok; sc.onerror = () => fail(new Error("could not load the unzip tool")); document.head.appendChild(sc); });
+
+function newAgg() { return { avg: {}, daily: {}, sleep: {}, units: {} }; }
+function addRecord(agg, tag) {
+  const type = attr(tag, "type"), m = METRICS[type]; if (!m) return;
+  const start = attr(tag, "startDate"), end = attr(tag, "endDate"), src = attr(tag, "sourceName");
+  if (m.kind === "sleep") {
+    if (!/Asleep/.test(attr(tag, "value"))) return;
+    const hrs = (Date.parse(end.replace(" ", "T").replace(/ ([+-]\d\d)(\d\d)$/, "$1:$2")) - Date.parse(start.replace(" ", "T").replace(/ ([+-]\d\d)(\d\d)$/, "$1:$2"))) / 3600000;
+    if (!(hrs > 0 && hrs < 24)) return;
+    const night = end.slice(0, 10), o = agg.sleep[night] ??= {}; o[src] = (o[src] || 0) + hrs; return;
+  }
+  const v = parseFloat(attr(tag, "value")); if (!isFinite(v)) return;
+  if (!agg.units[m.key]) agg.units[m.key] = m.unit || attr(tag, "unit");
+  if (m.kind === "daily") { const day = start.slice(0, 10), d = (agg.daily[m.key] ??= {}), o = (d[day] ??= {}); o[src] = (o[src] || 0) + v; return; }
+  const mo = start.slice(0, 7), a = (agg.avg[m.key] ??= {}), c = (a[mo] ??= [0, 0]); c[0] += v * (m.scale || 1); c[1]++;
+}
+// Turns the raw tallies into one value per month for each metric
+function monthly(agg) {
+  const out = {};
+  const perDay = days => { const mo = {}; for (const [day, srcs] of Object.entries(days)) { const best = Math.max(...Object.values(srcs)); const c = (mo[day.slice(0, 7)] ??= [0, 0]); c[0] += best; c[1]++; } return mo; };
+  for (const [k, mo] of Object.entries(agg.avg)) out[k] = mo;
+  for (const [k, days] of Object.entries(agg.daily)) out[k] = perDay(days);
+  if (Object.keys(agg.sleep).length) out.sleep = perDay(agg.sleep);
+  const res = {};
+  for (const [k, mo] of Object.entries(out)) res[k] = Object.fromEntries(Object.entries(mo).sort().map(([m, [s, n]]) => [m, s / n]));
+  return res;
+}
+
+// ---- clinical records (FHIR JSON from providers linked in Apple Health) ----
+const cc = c => c?.text || c?.coding?.find(x => x.display)?.display || c?.coding?.[0]?.code || "";
+const day = d => (d || "").slice(0, 10);
+function qty(q) { return q && q.value !== undefined ? `${+(+q.value).toFixed(2)} ${q.unit || q.code || ""}`.trim() : ""; }
+function range(r) { r = r?.[0]; if (!r) return ""; if (r.text) return r.text; const lo = qty(r.low), hi = qty(r.high); return lo && hi ? `${lo} – ${hi}` : lo ? `≥ ${lo}` : hi ? `≤ ${hi}` : ""; }
+function normalize(res) {
+  const t = res.resourceType;
+  if (t === "Observation") {
+    const cat = (res.category?.[0] ? cc(res.category[0]) : "") || (Array.isArray(res.category) ? "" : cc(res.category));
+    const value = qty(res.valueQuantity) || res.valueString || cc(res.valueCodeableConcept) || (res.component ? res.component.map(c => `${cc(c.code)} ${qty(c.valueQuantity)}`).join(", ") : "");
+    const flag = (cc(res.interpretation?.[0] ?? res.interpretation) || "").toUpperCase();
+    return { kind: /vital/i.test(cat) ? "Vitals" : "Labs", date: day(res.effectiveDateTime || res.effectivePeriod?.start || res.issued), title: cc(res.code), value, range: range(res.referenceRange), flag: /^(H|HH|HIGH|L|LL|LOW|A|ABNORMAL)/.test(flag) ? flag.replace(/^HIGH$/, "H").replace(/^LOW$/, "L") : "" };
+  }
+  if (/^Medication(Request|Statement|Order|Dispense)$/.test(t))
+    return { kind: "Medications", date: day(res.authoredOn || res.dateWritten || res.dateAsserted || res.effectivePeriod?.start || res.whenHandedOver), title: cc(res.medicationCodeableConcept) || res.medicationReference?.display || "", value: res.dosageInstruction?.[0]?.text || res.dosage?.[0]?.text || "", status: typeof res.status === "string" ? res.status : "" };
+  if (t === "Condition")
+    return { kind: "Conditions", date: day(res.onsetDateTime || res.recordedDate || res.dateRecorded || res.onsetPeriod?.start), title: cc(res.code), status: typeof res.clinicalStatus === "string" ? res.clinicalStatus : cc(res.clinicalStatus) };
+  if (t === "AllergyIntolerance")
+    return { kind: "Allergies", date: day(res.recordedDate || res.onsetDateTime || res.onset), title: cc(res.code) || cc(res.substance), value: (res.reaction?.[0]?.manifestation || []).map(cc).join(", ") };
+  if (t === "Immunization")
+    return { kind: "Immunizations", date: day(res.occurrenceDateTime || res.date), title: cc(res.vaccineCode) };
+  if (t === "Procedure")
+    return { kind: "Procedures", date: day(res.performedDateTime || res.performedPeriod?.start), title: cc(res.code) };
+  if (t === "DiagnosticReport")
+    return { kind: "Reports", date: day(res.effectiveDateTime || res.effectivePeriod?.start || res.issued), title: cc(res.code), value: (res.conclusion || "").slice(0, 400) };
+  return null;
+}
+const KINDS = ["Labs", "Medications", "Conditions", "Allergies", "Immunizations", "Procedures", "Reports", "Vitals"];
+
+$("appleImport").onclick = () => busy($("appleImport"), "Importing...", async () => {
+  const file = $("appleFile").files[0];
+  if (!file) return alert("Choose your Apple Health export.zip first.");
+  if (!window.fflate) await loadScript("https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js");
+  const agg = newAgg(), clinical = [], status = $("appleStatus"), prog = $("appleProg");
+  let records = 0, sawXml = false, sawZip = false;
+  prog.classList.remove("hidden"); prog.value = 0;
+  await new Promise(async (resolve, reject) => {
+    let pendingFiles = 0, ended = false;
+    const finish = () => { if (ended && pendingFiles === 0) resolve(); };
+    const unzip = new fflate.Unzip(entry => {
+      sawZip = true;
+      const name = entry.name;
+      if (/(^|\/)export\.xml$/.test(name)) {
+        sawXml = true; pendingFiles++;
+        const td = new TextDecoder(); let buf = "";
+        entry.ondata = (err, chunk, final) => {
+          if (err) return reject(err);
+          buf += td.decode(chunk, { stream: !final });
+          const last = buf.lastIndexOf(">");
+          if (last >= 0) {
+            const text = buf.slice(0, last + 1); buf = buf.slice(last + 1);
+            for (const m of text.matchAll(/<Record [^>]*>/g)) { addRecord(agg, m[0]); records++; }
+          }
+          if (final) { pendingFiles--; finish(); }
+        };
+        entry.start();
+      } else if (/clinical-records\/[^/]+\.json$/i.test(name)) {
+        pendingFiles++; const parts = [];
+        entry.ondata = (err, chunk, final) => {
+          if (err) return reject(err);
+          parts.push(chunk);
+          if (final) {
+            try {
+              const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let o = 0;
+              for (const p of parts) { all.set(p, o); o += p.length; }
+              const json = JSON.parse(new TextDecoder().decode(all));
+              for (const res of json.resourceType === "Bundle" ? (json.entry || []).map(e => e.resource) : [json]) {
+                const r = res && normalize(res); if (r && r.title) clinical.push(r);
+              }
+            } catch {}
+            pendingFiles--; finish();
+          }
+        };
+        entry.start();
+      }
+    });
+    unzip.register(fflate.UnzipInflate);
+    try {
+      const reader = file.stream().getReader(); let read = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) { unzip.push(new Uint8Array(0), true); break; }
+        read += value.length; unzip.push(value);
+        prog.value = read / file.size;
+        status.textContent = `Reading your export: ${Math.round(read / file.size * 100)}% · ${records.toLocaleString()} measurements · ${clinical.length} doctor records`;
+        await new Promise(r => setTimeout(r));
+      }
+      ended = true; finish();
+    } catch (e) { reject(e); }
+  });
+  prog.classList.add("hidden");
+  if (!sawZip) return status.textContent = "That file doesn't look like a zip. Choose the export.zip from the Health app.";
+  if (!sawXml && !clinical.length) return status.textContent = "This zip doesn't contain Apple Health data. Choose the export.zip from the Health app.";
+  clinical.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  let data = { importedAt: new Date().toISOString(), fileName: file.name, trends: monthly(agg), units: agg.units, clinical };
+  // keep the saved copy under the upload limit by dropping the oldest vitals, then oldest labs
+  for (const kind of ["Vitals", "Labs"]) while (JSON.stringify(data).length > 3500000 && data.clinical.some(c => c.kind === kind)) {
+    const i = data.clinical.map(c => c.kind).lastIndexOf(kind); data.clinical.splice(i, 1);
+  }
+  apple = data; await saveBlob("apple", apple); renderApple();
+  status.textContent = `Imported ${records.toLocaleString()} measurements and ${clinical.length} records from your doctors.`;
+  $("appleFile").value = "";
+});
+
+function spark(values) {
+  const v = values.filter(isFinite); if (v.length < 2) return "";
+  const lo = Math.min(...v), hi = Math.max(...v), w = 130, h = 30, pad = 3;
+  const pts = values.map((x, i) => `${(pad + i * (w - 2 * pad) / (values.length - 1)).toFixed(1)},${(h - pad - (hi === lo ? 0.5 : (x - lo) / (hi - lo)) * (h - 2 * pad)).toFixed(1)}`).join(" ");
+  const [lx, ly] = pts.split(" ").pop().split(",");
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="#1f6fb2" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${lx}" cy="${ly}" r="2.6" fill="#0b2e59"/></svg>`;
+}
+const monthName = m => new Date(m + "-15").toLocaleString(undefined, { month: "short", year: "numeric" });
+function renderApple() {
+  const t = $("appleTrends"), c = $("appleClinical"); t.innerHTML = c.innerHTML = "";
+  $("appleWhen").textContent = apple ? `Imported ${new Date(apple.importedAt).toLocaleDateString()}` : "";
+  $("appleImport").textContent = apple ? "Import a newer export" : "Import Apple Health data";
+  $("appleHow").open = !apple;
+  if (!apple) return;
+  const keys = ORDER.filter(k => apple.trends[k] && Object.keys(apple.trends[k]).length);
+  if (keys.length) {
+    t.insertAdjacentHTML("beforeend", `<div class="sect">Health trends</div><div class="trend head"><span>Measure</span><span>Latest month</span><span class="avg">12-month average</span><span>Last 2 years</span></div>`);
+    for (const k of keys) {
+      const m = Object.values(METRICS).find(x => x.key === k), months = Object.keys(apple.trends[k]).sort(), last = months.at(-1);
+      const fmt = x => (+x).toLocaleString(undefined, { maximumFractionDigits: m.dp, minimumFractionDigits: m.dp });
+      const unit = (apple.units[k] || m.unit || "").replace("count/min", "bpm");
+      const yr = months.slice(-12).map(x => apple.trends[k][x]), avg = yr.reduce((a, b) => a + b, 0) / yr.length;
+      const series = months.slice(-24).map(x => apple.trends[k][x]);
+      const row = document.createElement("div"); row.className = "trend";
+      row.innerHTML = `<span></span><span><b>${fmt(apple.trends[k][last])}</b> ${esc(unit)}<br><span class="src">${monthName(last)}</span></span><span class="avg">${fmt(avg)} ${esc(unit)}</span>${spark(series)}`;
+      row.firstChild.textContent = m.label; t.appendChild(row);
+    }
+  }
+  const items = apple.clinical || [];
+  if (items.length) {
+    c.insertAdjacentHTML("beforeend", `<div class="sect">From your doctors</div>`);
+    for (const kind of KINDS) {
+      let list = items.filter(i => i.kind === kind); if (!list.length) continue;
+      const det = document.createElement("details"); det.className = "cl";
+      if (kind === "Labs" || kind === "Vitals") { // latest result for each test
+        const seen = new Map(); for (const i of list) if (!seen.has(i.title)) seen.set(i.title, { ...i, n: list.filter(x => x.title === i.title).length });
+        list = [...seen.values()];
+      }
+      det.innerHTML = `<summary></summary>`; det.firstChild.textContent = `${kind} (${list.length})`;
+      for (const i of list.slice(0, 300)) {
+        const r = document.createElement("div"); r.className = "cli";
+        const left = document.createElement("div"); left.textContent = i.title;
+        const extra = [i.value, i.range && `range ${i.range}`, i.status, i.n > 1 && `${i.n} results`].filter(Boolean).join(" · ");
+        if (extra) { const sm = document.createElement("div"); sm.className = "src"; sm.textContent = extra; left.appendChild(sm); }
+        if (i.flag) { const f = document.createElement("span"); f.className = "flag"; f.textContent = " " + (/^L/.test(i.flag) ? "LOW" : /^H/.test(i.flag) ? "HIGH" : "ABNORMAL"); left.firstChild.after(f); }
+        const d = document.createElement("span"); d.className = "d"; d.textContent = i.date || "";
+        r.append(left, d); det.appendChild(r);
+      }
+      c.appendChild(det);
+    }
+  }
+}
+// A compact text version of the Apple data for the AI summary
+function appleForAI() {
+  if (!apple) return "";
+  let out = "MONTHLY TRENDS (last 24 months)\n";
+  for (const k of ORDER) {
+    const tr = apple.trends[k]; if (!tr) continue;
+    const m = Object.values(METRICS).find(x => x.key === k);
+    out += `${m.label} (${apple.units[k] || ""}): ` + Object.keys(tr).sort().slice(-24).map(mo => `${mo} ${(+tr[mo]).toFixed(m.dp)}`).join("; ") + "\n";
+  }
+  const cutoff = new Date(Date.now() - 3 * 365 * 864e5).toISOString().slice(0, 10);
+  out += "\nCLINICAL RECORDS FROM PROVIDERS\n";
+  for (const kind of KINDS) {
+    let list = (apple.clinical || []).filter(i => i.kind === kind);
+    if (kind === "Labs" || kind === "Vitals") list = list.filter(i => !i.date || i.date >= cutoff).slice(0, 400);
+    if (!list.length) continue;
+    out += `${kind}:\n` + list.map(i => `- ${i.date || "undated"} ${i.title}${i.value ? ": " + i.value : ""}${i.range ? " (range " + i.range + ")" : ""}${i.flag ? " [" + i.flag + "]" : ""}${i.status ? " (" + i.status + ")" : ""}`).join("\n") + "\n";
+  }
+  return out.slice(0, 150000);
+}
 
 function render() {
   const q = $("search").value.toLowerCase(), list = $("list"); list.innerHTML = "";
