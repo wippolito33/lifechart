@@ -159,8 +159,12 @@ $("unlock").onclick = () => busy($("unlock"), "Unlocking...", async () => {
   const vid = await vaultId(u), k = await stretch(p, pwSalt(u));
   auth = { "x-vault": vid, "x-token": k.token };
   const r = await api("keys");
-  if (r.status === 401) return alert((await exists(vid)) ? "Wrong passphrase." : "No account with that email yet. Choose Create an account.");
-  masterKey = await importMaster(new Uint8Array(await open(k.wrapKey, fromB64(await r.text()))));
+  if (r.status === 404) return alert("No account with that email yet. Choose Create an account.");
+  if (r.status === 401) return alert("Wrong passphrase.");
+  const wrapped = r.ok ? await r.text() : "";
+  if (!wrapped) return alert("We couldn't open your account. Please try again in a moment.");
+  try { masterKey = await importMaster(new Uint8Array(await open(k.wrapKey, fromB64(wrapped)))); }
+  catch { return alert("We couldn't unlock your account. Check your passphrase and try again."); }
   $("pass").value = ""; await enterApp();
 });
 
@@ -206,8 +210,11 @@ $("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {
   const vid = await vaultId(u), rk = await stretch(code, rcSalt(u));
   const rh = { "x-vault": vid, "x-rtoken": rk.token };
   const r = await fetch("/api/recover", { headers: rh });
+  if (r.status === 404) return alert("No account with that email. Choose Create an account.");
   if (!r.ok) return alert("That email and recovery code don't match.");
-  const master = new Uint8Array(await open(rk.wrapKey, fromB64(await r.text())));
+  let master;
+  try { master = new Uint8Array(await open(rk.wrapKey, fromB64(await r.text()))); }
+  catch { return alert("That email and recovery code don't match."); }
   const k = await stretch(p, pwSalt(u));
   const r2 = await fetch("/api/reset", { method: "POST", headers: { ...rh, "content-type": "application/json" },
     body: JSON.stringify({ token: k.token, wrapP: toB64(await seal(k.wrapKey, master)) }) });

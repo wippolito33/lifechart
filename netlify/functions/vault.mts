@@ -1,21 +1,37 @@
 import { getStore } from "@netlify/blobs";
 import type { Config } from "@netlify/functions";
 
-// v2 store: accounts with a profile and a recovery code
+// Each account's login checks and locked keys live together in ONE record,
+// so an account is saved all at once and can never end up half-created.
 const store = () => getStore({ name: "lifechart-v2", consistency: "strong" });
 const HEX = /^[a-f0-9]{64}$/;
 const ID = /^[a-zA-Z0-9-]{8,64}$/;
 const B64 = /^[A-Za-z0-9+/=]{20,4000}$/;
+
+type Account = { auth: string; rauth: string; wrapP: string; wrapR: string };
 
 async function sha256(text: string) {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function matches(vault: string, token: string, slot: "auth" | "rauth") {
-  if (!HEX.test(vault) || !HEX.test(token)) return false;
-  const saved = await store().get(`${vault}/${slot}`);
-  return saved !== null && saved === (await sha256(token));
+// Returns the account, or null if there is none or only a broken, half-saved one
+async function getAccount(vault: string): Promise<Account | null> {
+  const s = store();
+  const acct = await s.get(`${vault}/account`, { type: "json" });
+  if (acct && acct.auth && acct.rauth && acct.wrapP && acct.wrapR) return acct as Account;
+  // Accounts created by the earlier version stored these as separate pieces
+  const [auth, rauth, wrapP, wrapR] = await Promise.all(
+    ["auth", "rauth", "wrapP", "wrapR"].map(k => s.get(`${vault}/${k}`)));
+  if (auth && rauth && wrapP && wrapR) return { auth, rauth, wrapP, wrapR };
+  return null;
+}
+
+// Clears every leftover piece of a broken sign-up so the email can be used again
+async function clearVault(vault: string) {
+  const s = store();
+  const { blobs } = await s.list({ prefix: `${vault}/` });
+  await Promise.all(blobs.map(b => s.delete(b.key)));
 }
 
 const bad = (msg: string, status = 400) => new Response(msg, { status });
@@ -27,45 +43,45 @@ export default async (req: Request) => {
   const vault = req.headers.get("x-vault") ?? "";
   const token = req.headers.get("x-token") ?? "";
   const rtoken = req.headers.get("x-rtoken") ?? "";
+  if (!HEX.test(vault)) return bad("Bad request");
 
-  // Is this username taken?
+  // Is there a working account for this email?
   if (route === "exists" && req.method === "GET") {
-    if (!HEX.test(vault)) return bad("Bad request");
-    return new Response((await s.get(`${vault}/auth`)) === null ? "no" : "yes");
+    return new Response((await getAccount(vault)) ? "yes" : "no");
   }
 
-  // Create an account
+  // Create an account (also replaces a broken, half-saved one)
   if (route === "signup" && req.method === "POST") {
     const b = await req.json().catch(() => null);
-    if (!HEX.test(vault) || !HEX.test(token) || !b || !HEX.test(b.rtoken ?? "") || !B64.test(b.wrapP ?? "") || !B64.test(b.wrapR ?? "")) return bad("Bad request");
-    const { modified } = await s.set(`${vault}/auth`, await sha256(token), { onlyIfNew: true });
-    if (!modified) return bad("Username taken", 409);
-    await Promise.all([
-      s.set(`${vault}/rauth`, await sha256(b.rtoken)),
-      s.set(`${vault}/wrapP`, b.wrapP),
-      s.set(`${vault}/wrapR`, b.wrapR),
-    ]);
+    if (!HEX.test(token) || !b || !HEX.test(b.rtoken ?? "") || !B64.test(b.wrapP ?? "") || !B64.test(b.wrapR ?? "")) return bad("Bad request");
+    if (await getAccount(vault)) return bad("Account exists", 409);
+    await clearVault(vault);
+    const acct: Account = { auth: await sha256(token), rauth: await sha256(b.rtoken), wrapP: b.wrapP, wrapR: b.wrapR };
+    const { modified } = await s.setJSON(`${vault}/account`, acct, { onlyIfNew: true });
+    if (!modified) return bad("Account exists", 409);
     return new Response("created");
   }
 
+  const acct = await getAccount(vault);
+  if (!acct) return bad("No account", 404);
+
   // Forgot passphrase: the recovery code unlocks the backup key, then a new passphrase is set
   if (route === "recover" || route === "reset") {
-    if (!(await matches(vault, rtoken, "rauth"))) return bad("Unauthorized", 401);
-    if (route === "recover" && req.method === "GET") return new Response((await s.get(`${vault}/wrapR`)) ?? "");
+    if (!HEX.test(rtoken) || acct.rauth !== (await sha256(rtoken))) return bad("Unauthorized", 401);
+    if (route === "recover" && req.method === "GET") return new Response(acct.wrapR);
     if (route === "reset" && req.method === "POST") {
       const b = await req.json().catch(() => null);
       if (!b || !HEX.test(b.token ?? "") || !B64.test(b.wrapP ?? "")) return bad("Bad request");
-      await s.set(`${vault}/auth`, await sha256(b.token));
-      await s.set(`${vault}/wrapP`, b.wrapP);
+      await s.setJSON(`${vault}/account`, { ...acct, auth: await sha256(b.token), wrapP: b.wrapP });
       return new Response("reset");
     }
     return bad("Not found", 404);
   }
 
   // Everything below needs the passphrase login
-  if (!(await matches(vault, token, "auth"))) return bad("Unauthorized", 401);
+  if (!HEX.test(token) || acct.auth !== (await sha256(token))) return bad("Unauthorized", 401);
 
-  if (route === "keys" && req.method === "GET") return new Response((await s.get(`${vault}/wrapP`)) ?? "");
+  if (route === "keys" && req.method === "GET") return new Response(acct.wrapP);
 
   // Encrypted profile and record list
   if (route === "profile" || route === "index") {
