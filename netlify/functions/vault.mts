@@ -43,6 +43,76 @@ async function clearVault(vault: string) {
 
 const bad = (msg: string, status = 400) => new Response(msg, { status });
 
+// ---------- AI summaries ----------
+// The browser unlocks a record and sends it here only when the user asks for a summary.
+// Nothing sent here is stored or logged; only the encrypted result is saved by the browser.
+const env = (k: string) => (globalThis as any).Netlify?.env.get(k) ?? process.env[k];
+const MODEL = () => env("ANTHROPIC_MODEL") || "claude-sonnet-5-5";
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+const RECORD_PROMPT = `You are helping a patient keep an organized personal health record.
+Summarize the attached medical document for the patient's own file. Use short plain-text bullets under these labels, skipping any label with nothing to report:
+Document: type, date, provider or facility
+Findings: key findings and impressions
+Diagnoses / conditions
+Test results: name, value, units, reference range; mark anything outside range with (HIGH) or (LOW)
+Medications: anything started, stopped or changed
+Follow-up: recommendations or next steps
+Report only what the document says. Do not guess or add advice. Keep it under 250 words.`;
+
+const OVERALL_PROMPT = `You are helping a patient keep an organized personal health record.
+Below are the patient's profile and short summaries of each record in their file. Write a clear, well-organized health summary the patient could read and share with a doctor. Use these markdown sections (## headings, - bullets), skipping any with nothing to report:
+## Overview
+## Conditions and diagnoses
+## Current medications
+## Allergies
+## Recent test results (flag anything out of range; include dates)
+## Imaging and procedures
+## Care team
+## Timeline (most recent first, one line each: date, what happened, source file)
+## Questions to discuss with your doctor
+Base everything only on the information given and name the source file for key facts. If records disagree or something is unclear, say so. Do not diagnose or give treatment advice. Write in plain language.`;
+
+async function callClaude(content: any[], maxTokens: number) {
+  const key = env("ANTHROPIC_API_KEY");
+  if (!key) throw new Error("The AI key is not set up on the server yet.");
+  const r = await fetch((env("ANTHROPIC_BASE_URL") || "https://api.anthropic.com") + "/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL(), max_tokens: maxTokens, messages: [{ role: "user", content }] }),
+  });
+  const j: any = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || `AI service error (${r.status})`);
+  return (j.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n").trim();
+}
+
+async function summarize(req: Request) {
+  const b: any = await req.json().catch(() => null);
+  if (!b) return bad("Bad request");
+  try {
+    if (b.mode === "record") {
+      const meta = `File: ${b.name || "record"}\nRecord type: ${b.category || "unknown"}\nDoctor or facility (entered by patient): ${b.doctor || "not given"}\nDate (entered by patient): ${b.date || "not given"}`;
+      let block: any;
+      if (b.mime === "application/pdf") block = { type: "document", source: { type: "base64", media_type: "application/pdf", data: b.data } };
+      else if (IMAGE_TYPES.includes(b.mime)) block = { type: "image", source: { type: "base64", media_type: b.mime, data: b.data } };
+      else if (typeof b.text === "string") block = { type: "text", text: "Document text:\n" + b.text.slice(0, 200000) };
+      else return bad("This file type can't be summarized.");
+      const text = await callClaude([block, { type: "text", text: meta + "\n\n" + RECORD_PROMPT }], 900);
+      return Response.json({ text });
+    }
+    if (b.mode === "overall") {
+      const recs = (b.records || []).map((r: any) =>
+        `### ${r.name} (${r.category || "record"}, ${r.date || "undated"}, ${r.doctor || "no doctor listed"})\n${r.summary || "(not summarized)"}`).join("\n\n");
+      const input = `PATIENT PROFILE\n${JSON.stringify(b.profile || {}, null, 1)}\n\nRECORD SUMMARIES\n${recs || "(none)"}\n\n${OVERALL_PROMPT}`;
+      const text = await callClaude([{ type: "text", text: input }], 3000);
+      return Response.json({ text });
+    }
+    return bad("Bad request");
+  } catch (e: any) {
+    return bad(e?.message || "Summary failed", 502);
+  }
+}
+
 export default async (req: Request) => {
   const s = store();
   const parts = new URL(req.url).pathname.replace(/^\/api\//, "").split("/");
@@ -92,8 +162,10 @@ export default async (req: Request) => {
 
   if (route === "keys" && req.method === "GET") return new Response(acct.wrapP);
 
-  // Encrypted profile and record list
-  if (route === "profile" || route === "index") {
+  if (route === "summarize" && req.method === "POST") return summarize(req);
+
+  // Encrypted profile, record list and saved health summary
+  if (route === "profile" || route === "index" || route === "summary") {
     if (req.method === "GET") {
       const v = await s.get(`${vault}/${route}`);
       return v === null ? bad("Not found", 404) : new Response(v);

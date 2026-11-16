@@ -29,6 +29,10 @@
  .med button.x{background:#fff;color:#c62828;border:1px solid #f1c6c6;padding:7px 11px}
  .pf .sect{border:0;padding:12px 0 2px} .pf ul{margin:4px 0 0;padding-left:20px}
  .cat{background:#0b2e59;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;margin-right:4px}
+ .sum{line-height:1.5} .sum h4{margin:16px 0 4px;color:#1f6fb2;font-size:15px} .sum ul{margin:4px 0;padding-left:20px} .sum p{margin:6px 0}
+ .note{background:#fff8e6;border:1px solid #f3dfa6;color:#6b5310;border-radius:8px;padding:8px 10px;font-size:13px;margin:8px 0}
+ .ghost{background:#fff;color:#1f6fb2;border:1px solid #c9dcf2}
+ @media print{header,#app>.card:not(#summaryCard),#summaryCard button,.row button{display:none!important}body{background:#fff}.card{box-shadow:none;border:0}}
  .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
  @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
@@ -76,6 +80,14 @@
   <div id="profileView" class="pf"></div>
   <div id="profileEdit" class="hidden"><div id="p_fields"></div><button id="saveProfile">Save profile</button></div>
  </div>
+ <div class="card" id="summaryCard">
+  <div class="row"><h2>Health summary</h2><span class="src" id="sumWhen"></span></div>
+  <p class="src" id="sumIntro">Have AI read your records and write one summary you can read or share with a doctor.</p>
+  <button id="summarize">Summarize my records</button> <button class="ghost hidden" id="sumPrint">Print</button> <button class="ghost hidden" id="sumDownload">Download</button>
+  <div id="sumStatus" class="src"></div>
+  <div id="sumNote" class="note hidden">AI-generated from your records. It can make mistakes and is not medical advice. Check anything important with your doctor.</div>
+  <div id="sumText" class="sum"></div>
+ </div>
  <div class="card">
   <h2>Add a record</h2>
   <input id="file" type="file" multiple>
@@ -108,7 +120,7 @@ const addrKeys = pre => pre ? [pre + "Street", pre + "Unit", pre + "City", pre +
 const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map(k => [k]) : f);
 const isTel = k => FIELDS.some(([key, , t]) => key === k && t === "tel");
 CATEGORIES.forEach(c => $("category").insertAdjacentHTML("beforeend", `<option>${c}</option>`));
-let masterKey, auth, index = [], profile = {}, pendingCode = "", pendingUser = "";
+let masterKey, auth, index = [], profile = {}, summary = null, pendingCode = "", pendingUser = "";
 
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
@@ -213,7 +225,7 @@ async function busy(btn, label, fn) {
   finally { btn.disabled = false; btn.textContent = t; }
 }
 async function enterApp() {
-  index = await loadBlob("index", []); profile = await loadBlob("profile", {});
+  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary();
   renderProfile(); render(); show("app");
 }
 
@@ -365,12 +377,17 @@ $("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
   $("status").textContent = "Saved and encrypted."; $("file").value = ""; render();
 });
 
-async function view(rec) {
+async function fileBlob(rec) {
   const parts = [];
   for (let n = 0; n < rec.chunks; n++) {
-    const r = await api(`file/${rec.id}/${n}`); parts.push(await open(masterKey, new Uint8Array(await r.arrayBuffer())));
+    const r = await api(`file/${rec.id}/${n}`);
+    if (!r.ok) throw new Error("could not download " + rec.name);
+    parts.push(await open(masterKey, new Uint8Array(await r.arrayBuffer())));
   }
-  const url = URL.createObjectURL(new Blob(parts, { type: rec.type || "application/octet-stream" }));
+  return new Blob(parts, { type: rec.type || "application/octet-stream" });
+}
+async function view(rec) {
+  const url = URL.createObjectURL(await fileBlob(rec));
   if (/pdf|image/.test(rec.type)) window.open(url); else Object.assign(document.createElement("a"), { href: url, download: rec.name }).click();
 }
 async function remove(rec) {
@@ -378,6 +395,74 @@ async function remove(rec) {
   await api(`file/${rec.id}`, { method: "DELETE" });
   index = index.filter(r => r.id !== rec.id); await saveBlob("index", index); render();
 }
+
+// ---------- AI health summary ----------
+const AI_MAX = 4 * 1024 * 1024; // larger files can't be sent in one piece
+const AI_IMAGE = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const canSummarize = r => r.size <= AI_MAX && (r.type === "application/pdf" || AI_IMAGE.includes(r.type) || /^text\//.test(r.type) || /\.(txt|csv|xml|json)$/i.test(r.name));
+const esc = t => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function mdToHtml(md) {
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  let h = "", inList = false;
+  for (const raw of md.split("\n")) {
+    const l = raw.trim();
+    const bullet = l.match(/^[-*•]\s+(.*)/);
+    if (!bullet && inList) { h += "</ul>"; inList = false; }
+    if (!l) continue;
+    if (/^#{1,6}\s/.test(l)) h += `<h4>${inline(l.replace(/^#+\s*/, ""))}</h4>`;
+    else if (bullet) { if (!inList) { h += "<ul>"; inList = true; } h += `<li>${inline(bullet[1])}</li>`; }
+    else h += `<p>${inline(l)}</p>`;
+  }
+  return h + (inList ? "</ul>" : "");
+}
+function renderSummary() {
+  const has = !!(summary && summary.text);
+  $("sumText").innerHTML = has ? mdToHtml(summary.text) : "";
+  $("sumNote").classList.toggle("hidden", !has);
+  ["sumPrint", "sumDownload"].forEach(id => $(id).classList.toggle("hidden", !has));
+  $("sumWhen").textContent = has ? `Updated ${new Date(summary.at).toLocaleString()} · ${summary.count} record${summary.count === 1 ? "" : "s"}` : "";
+  $("summarize").textContent = has ? "Update summary" : "Summarize my records";
+  $("sumIntro").classList.toggle("hidden", has);
+}
+async function postSummary(body) {
+  const r = await api("summarize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(await r.text() || "the summary service did not respond");
+  return (await r.json()).text;
+}
+$("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
+  if (!index.length) return alert("Add a record first.");
+  const ok = confirm("To write your summary, your records will be unlocked on this device and sent to an AI service (Anthropic's Claude) to be read. They are not stored there by LifeChart. The finished summary is saved encrypted with your records.\n\nContinue?");
+  if (!ok) return;
+  const todo = index.filter(r => !r.ai && canSummarize(r)), skipped = index.filter(r => !r.ai && !canSummarize(r));
+  let done = 0, failed = [];
+  for (const rec of todo) {
+    $("sumStatus").textContent = `Reading ${rec.name} (${++done} of ${todo.length})...`;
+    try {
+      const blob = await fileBlob(rec), body = { mode: "record", name: rec.name, category: rec.category, doctor: rec.doctor, date: rec.date, mime: rec.type };
+      if (rec.type === "application/pdf" || AI_IMAGE.includes(rec.type)) body.data = toB64(new Uint8Array(await blob.arrayBuffer()));
+      else body.text = await blob.text();
+      rec.ai = await postSummary(body); rec.aiAt = new Date().toISOString();
+      await saveBlob("index", index);
+    } catch (e) { failed.push(`${rec.name} (${e.message})`); }
+  }
+  const have = index.filter(r => r.ai);
+  if (!have.length && !Object.values(profile).some(Boolean)) { $("sumStatus").textContent = ""; return alert("None of your records could be read. " + (failed[0] || "")); }
+  $("sumStatus").textContent = "Writing your summary...";
+  const { email, ...prof } = profile;
+  const text = await postSummary({ mode: "overall", profile: prof,
+    records: have.map(r => ({ name: r.name, category: r.category, doctor: r.doctor, date: r.date, summary: r.ai })) });
+  summary = { text, at: new Date().toISOString(), count: have.length };
+  await saveBlob("summary", summary); renderSummary();
+  const notes = [];
+  if (skipped.length) notes.push(`Skipped (not a PDF, image or text file, or larger than 4 MB): ${skipped.map(r => r.name).join(", ")}.`);
+  if (failed.length) notes.push(`Couldn't read: ${failed.join("; ")}.`);
+  $("sumStatus").textContent = notes.join(" ");
+}).then(renderSummary);
+$("sumPrint").onclick = () => window.print();
+$("sumDownload").onclick = () => {
+  const head = `LifeChart health summary for ${profile.fullName || profile.email || ""}\nUpdated ${new Date(summary.at).toLocaleString()}\nAI-generated from your records. It can make mistakes and is not medical advice.\n\n`;
+  Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([head + summary.text], { type: "text/plain" })), download: "LifeChart-health-summary.txt" }).click();
+};
 
 function render() {
   const q = $("search").value.toLowerCase(), list = $("list"); list.innerHTML = "";
