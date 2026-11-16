@@ -97,7 +97,7 @@ const STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID"
 const CATEGORIES = ["Labs", "Imaging", "MRI", "Doctor's records", "Other"];
 // Profile sections: [title, fields]. An "addr" field set is [prefix, label for the unit box].
 const SECTIONS = [
-  ["About you", [["fullName", "Full name"], ["dob", "Date of birth", "date"], ["mobile", "Mobile phone", "tel"]]],
+  ["About you", [["fullName", "Full name"], ["dob", "Date of birth", "date"], ["mobile", "Mobile phone", "tel"], ["homePhone", "Home phone", "tel"], ["workPhone", "Work phone", "tel"]]],
   ["Home address", "addr", "", "Apartment / unit"],
   ["Emergency contact", [["emName", "Name"], ["emPhone", "Phone", "tel"], ["emRel", "Relationship"]]],
   ["Primary physician", [["physician", "Physician name"], ["physPhone", "Office phone", "tel"]]],
@@ -106,6 +106,7 @@ const SECTIONS = [
 ];
 const addrKeys = pre => pre ? [pre + "Street", pre + "Unit", pre + "City", pre + "State", pre + "Zip"] : ["street", "apt", "city", "state", "zip"];
 const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map(k => [k]) : f);
+const isTel = k => FIELDS.some(([key, , t]) => key === k && t === "tel");
 CATEGORIES.forEach(c => $("category").insertAdjacentHTML("beforeend", `<option>${c}</option>`));
 let masterKey, auth, index = [], profile = {}, pendingCode = "", pendingUser = "";
 
@@ -155,8 +156,30 @@ const box = (p, k, l, t) => {
   if (t === "textarea") return `<div class="wide">${lab}<textarea id="${id}" placeholder="For example: penicillin, peanuts, latex. Leave blank if none."></textarea></div>`;
   if (t === "state") return `<div>${lab}<select id="${id}"><option value="">State</option>${STATES.map(x => `<option>${x}</option>`).join("")}</select></div>`;
   if (t === "zip") return `<div>${lab}<input id="${id}" inputmode="numeric" maxlength="10" placeholder="ZIP"></div>`;
+  if (t === "tel") return `<div>${lab}<input id="${id}" type="tel" inputmode="tel" autocomplete="off" placeholder="(732) 555-0100"></div>`;
   return `<div>${lab}<input id="${id}" type="${t || "text"}"></div>`;
 };
+// Formats US numbers as (732) 555-0100 and keeps an extension (x123).
+// Numbers starting with + (international) are left as typed.
+function formatPhone(v) {
+  v = (v || "").trim();
+  if (!v || v.startsWith("+")) return v;
+  const [main, ext] = v.split(/\s*(?:x|ext\.?)\s*/i);
+  let d = main.replace(/\D/g, "");
+  if (d.length === 11 && d[0] === "1") d = d.slice(1);
+  if (d.length > 10) return v;
+  let out = d.length > 6 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : d.length > 3 ? `(${d.slice(0, 3)}) ${d.slice(3)}` : d;
+  const e = (ext || "").replace(/\D/g, "");
+  if (ext !== undefined) out += " x" + e;
+  return out;
+}
+document.addEventListener("input", e => {
+  const el = e.target;
+  if (el.type !== "tel" || el.value.trim().startsWith("+")) return;
+  const atEnd = el.selectionStart === el.value.length, f = formatPhone(el.value);
+  if (f !== el.value && atEnd) el.value = f;
+});
+document.addEventListener("change", e => { if (e.target.type === "tel") e.target.value = formatPhone(e.target.value); });
 function fieldsHTML(p) {
   let h = "";
   for (const [title, f, pre, unitLabel] of SECTIONS) {
@@ -179,8 +202,8 @@ function addMedRow(p, m = {}) {
 }
 for (const p of ["s_", "p_"]) { $(p + "fields").innerHTML = fieldsHTML(p); $(p + "addMed").onclick = () => addMedRow(p); }
 const readMeds = p => [...$(p + "meds").children].map(r => { const [n, d, f] = r.querySelectorAll("input"); return { name: n.value.trim(), dose: d.value.trim(), freq: f.value.trim() }; }).filter(m => m.name);
-const readFields = p => ({ ...Object.fromEntries(FIELDS.map(([k]) => [k, $(p + k).value.trim()])), meds: readMeds(p) });
-const fillFields = (p, o) => { FIELDS.forEach(([k]) => { $(p + k).value = o[k] || ""; }); $(p + "meds").innerHTML = ""; (o.meds || []).forEach(m => addMedRow(p, m)); if (!(o.meds || []).length) addMedRow(p); };
+const readFields = p => ({ ...Object.fromEntries(FIELDS.map(([k]) => [k, isTel(k) ? formatPhone($(p + k).value) : $(p + k).value.trim()])), meds: readMeds(p) });
+const fillFields = (p, o) => { FIELDS.forEach(([k]) => { $(p + k).value = isTel(k) ? formatPhone(o[k]) : (o[k] || ""); }); $(p + "meds").innerHTML = ""; (o.meds || []).forEach(m => addMedRow(p, m)); if (!(o.meds || []).length) addMedRow(p); };
 addMedRow("s_");
 const exists = async vid => (await (await fetch("/api/exists", { headers: { "x-vault": vid } })).text()) === "yes";
 
@@ -295,7 +318,7 @@ function renderProfile() {
     if (title === "Physician's office address") continue;
     const h = head(title); let any = title === "About you" && line("Email (sign-in)", profile.email);
     if (f === "addr") any = line("Address", fmtAddr(profile, pre)) || any;
-    else for (const [k, l] of f) any = line(l, profile[k]) || any;
+    else for (const [k, l, t] of f) any = line(l, t === "tel" ? formatPhone(profile[k]) : profile[k]) || any;
     if (title === "Primary physician") any = line("Office address", fmtAddr(profile, "phys")) || any;
     if (title === "Health") {
       const meds = profile.meds || [];
