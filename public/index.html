@@ -421,6 +421,13 @@ $("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {
 });
 
 // Profile
+// Date of birth as MM/DD/YYYY with the current age, e.g. "05/01/1970 (56)"
+function fmtDob(d) {
+  const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(d || ""); if (!m) return d || "";
+  const [, y, mo, da] = m.map(Number), now = new Date();
+  let age = now.getFullYear() - y; if (now.getMonth() + 1 < mo || (now.getMonth() + 1 === mo && now.getDate() < da)) age--;
+  return `${m[2]}/${m[3]}/${m[1]}` + (age >= 0 && age < 130 ? ` (${age})` : "");
+}
 // Joins the address boxes into one readable address
 function fmtAddr(o, pre) {
   const [st, un, ci, sa, zi] = addrKeys(pre).map(k => o[k] || "");
@@ -445,7 +452,7 @@ function renderProfile() {
     if (title === "Physician's office address") continue;
     const h = head(title); let any = title === "About you" && line("Email (sign-in)", profile.email);
     if (f === "addr") any = line("Address", fmtAddr(profile, pre)) || any;
-    else for (const [k, l, t] of f) any = line(l, t === "tel" ? formatPhone(profile[k]) : profile[k]) || any;
+    else for (const [k, l, t] of f) any = line(l, t === "tel" ? formatPhone(profile[k]) : k === "dob" ? fmtDob(profile[k]) : profile[k]) || any;
     if (title === "Primary physician") any = line("Office address", fmtAddr(profile, "phys")) || any;
     if (title === "Health") {
       const meds = profile.meds || [];
