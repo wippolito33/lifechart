@@ -187,7 +187,7 @@ $("create").onclick = () => busy($("create"), "Creating...", async () => {
   if (!r.ok) throw new Error("could not create the account");
   masterKey = await importMaster(master);
   profile = info; index = [];
-  await saveBlob("profile", profile); await saveBlob("index", index);
+  await saveBlob("profile", profile);
   pendingCode = code; pendingUser = u; $("codeBox").textContent = code;
   $("s_pass").value = $("s_pass2").value = ""; show("recovery");
 });
@@ -199,7 +199,11 @@ $("dlCode").onclick = () => {
   Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([txt], { type: "text/plain" })), download: "LifeChart-recovery-code.txt" }).click();
 };
 $("printCode").onclick = () => window.print();
-$("continue").onclick = () => { pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); show("app"); };
+// Saving the record list marks sign-up as finished, so it happens only after the code is saved
+$("continue").onclick = () => busy($("continue"), "Finishing...", async () => {
+  await saveBlob("index", index);
+  pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); show("app");
+});
 
 // Forgot passphrase
 $("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {

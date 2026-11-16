@@ -27,6 +27,13 @@ async function getAccount(vault: string): Promise<Account | null> {
   return null;
 }
 
+// A finished account has its keys AND its record list. One missing the list
+// never got through sign-up (for example, the recovery code was never shown),
+// so the same email may sign up again and start fresh.
+async function isComplete(vault: string) {
+  return (await getAccount(vault)) !== null && (await store().get(`${vault}/index`)) !== null;
+}
+
 // Clears every leftover piece of a broken sign-up so the email can be used again
 async function clearVault(vault: string) {
   const s = store();
@@ -47,18 +54,20 @@ export default async (req: Request) => {
 
   // Is there a working account for this email?
   if (route === "exists" && req.method === "GET") {
-    return new Response((await getAccount(vault)) ? "yes" : "no");
+    return new Response((await isComplete(vault)) ? "yes" : "no");
   }
 
   // Create an account (also replaces a broken, half-saved one)
   if (route === "signup" && req.method === "POST") {
     const b = await req.json().catch(() => null);
     if (!HEX.test(token) || !b || !HEX.test(b.rtoken ?? "") || !B64.test(b.wrapP ?? "") || !B64.test(b.wrapR ?? "")) return bad("Bad request");
-    if (await getAccount(vault)) return bad("Account exists", 409);
+    if (await isComplete(vault)) return bad("Account exists", 409);
     await clearVault(vault);
     const acct: Account = { auth: await sha256(token), rauth: await sha256(b.rtoken), wrapP: b.wrapP, wrapR: b.wrapR };
-    const { modified } = await s.setJSON(`${vault}/account`, acct, { onlyIfNew: true });
-    if (!modified) return bad("Account exists", 409);
+    await s.setJSON(`${vault}/account`, acct);
+    // Read it back to confirm this sign-up's record is the one saved
+    const saved = await getAccount(vault);
+    if (!saved || saved.auth !== acct.auth) return bad("Account exists", 409);
     return new Response("created");
   }
 
