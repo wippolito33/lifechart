@@ -67,6 +67,12 @@
  #updateBar{position:sticky;top:0;z-index:40;background:#0b2e59;color:#fff;padding:10px 16px;display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;font-size:14px}
  #updateBar.hidden{display:none}
  #updateBar button{background:#fff;color:#0b2e59;margin:0;padding:6px 14px;font-weight:700}
+ .btnrow{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px} .btnrow button{margin:0}
+ .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px} .form-grid .wide{grid-column:1/-1}
+ .entry{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 2px;border-bottom:1px solid #f0f4fa;font-size:14px}
+ .entry button.x{background:#fff;color:#c62828;border:1px solid #f1c6c6;padding:3px 9px;margin:0}
+ .mine{display:inline-block;background:#e3f0fc;color:#1f6fb2;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:6px}
+ @media(max-width:600px){.form-grid{grid-template-columns:1fr}}
  .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
  @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
@@ -130,6 +136,11 @@
   <div id="labStatus" class="src"></div>
   <div id="labList"></div>
  </div>
+ <div class="card" id="trendCard">
+  <div class="row"><h2>Health trends</h2><span class="src">Tap a row for its full history</span></div>
+  <div class="btnrow"><button class="ghost" id="addBP">+ Blood pressure</button> <button class="ghost" id="addWeight">+ Weight</button> <button class="ghost" id="addGlucose">+ Blood glucose</button></div>
+  <div id="appleTrends"></div>
+ </div>
  <div class="card">
   <h2>Add a record</h2>
   <label for="file">Choose one or more files. You can pick more to add to the list.</label>
@@ -158,7 +169,6 @@
   <input id="appleFile" type="file" accept=".zip,application/zip">
   <button id="appleImport">Import Apple Health data</button>
   <progress id="appleProg" class="hidden" max="1" value="0"></progress><div id="appleStatus" class="src"></div>
-  <div id="appleTrends"></div>
   <div id="appleClinical"></div>
  </div>
  <div class="card"><input id="search" placeholder="Search by name, type, doctor, tag or notes"><div id="list"></div></div>
@@ -184,7 +194,7 @@ const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map
 const isTel = k => FIELDS.some(([key, , t]) => key === k && t === "tel");
 const catOptions = () => `<option value="">Choose a type</option>` + CATEGORIES.map(c => `<option>${c}</option>`).join("");
 $("allCat").innerHTML = catOptions();
-let masterKey, auth, index = [], profile = {}, summary = null, apple = null, appleDaily = null, pendingCode = "", pendingUser = "";
+let masterKey, auth, index = [], profile = {}, summary = null, apple = null, appleDaily = null, manual = [], pendingCode = "", pendingUser = "";
 
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
@@ -324,7 +334,7 @@ async function busy(btn, label, fn) {
   finally { btn.disabled = false; btn.textContent = t; }
 }
 async function enterApp() {
-  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); renderApple(); renderLabs();
+  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); manual = await loadBlob("manual", []); renderApple(); renderLabs();
   renderProfile(); render(); show("app");
 }
 
@@ -595,7 +605,7 @@ async function postSummary(body) {
 }
 $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
   if (!(await mustBeCurrent())) return;
-  if (!index.length && !apple) return alert("Add a record or import Apple Health data first.");
+  if (!index.length && !apple && !manual.length) return alert("Add a record, a reading, or import Apple Health data first.");
   const ok = confirm("To write your summary, your records will be unlocked on this device and sent to an AI service (Anthropic's Claude) to be read. They are not stored there by LifeChart. The finished summary is saved encrypted with your records.\n\nContinue?");
   if (!ok) return;
   const todo = index.filter(r => !r.ai && canSummarize(r)), skipped = index.filter(r => !r.ai && !canSummarize(r));
@@ -611,7 +621,7 @@ $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
     } catch (e) { failed.push(`${rec.name} (${e.message})`); }
   }
   const have = index.filter(r => r.ai);
-  if (!have.length && !apple && !Object.values(profile).some(Boolean)) { $("sumStatus").textContent = ""; return alert("None of your records could be read. " + (failed[0] || "")); }
+  if (!have.length && !apple && !manual.length && !Object.values(profile).some(Boolean)) { $("sumStatus").textContent = ""; return alert("None of your records could be read. " + (failed[0] || "")); }
   $("sumStatus").textContent = "Writing your summary...";
   const { email, photo, ...prof } = profile;
   const text = await postSummary({ mode: "overall", profile: prof, apple: appleForAI(),
@@ -822,29 +832,37 @@ function spark(values, values2) {
 }
 const monthName = m => new Date(m + "-15").toLocaleString(undefined, { month: "short", year: "numeric" });
 function renderApple() {
-  const t = $("appleTrends"), c = $("appleClinical"); t.innerHTML = c.innerHTML = "";
+  const c = $("appleClinical"); c.innerHTML = "";
   $("appleWhen").textContent = apple ? `Imported ${new Date(apple.importedAt).toLocaleDateString()}` : "";
   $("appleImport").textContent = apple ? "Import a newer export" : "Import Apple Health data";
   $("appleHow").open = !apple;
+  renderTrends();
   if (!apple) return;
-  const has = k => apple.trends[k] && Object.keys(apple.trends[k]).length;
+  renderClinical(c);
+}
+function renderTrends() {
+  const t = $("appleTrends"); t.innerHTML = "";
+  const has = k => { const tr = trendOf(k); return tr && Object.keys(tr).length; };
   const keys = ORDER.filter(k => k === "bp" ? has("bpSys") && has("bpDia") : has(k));
-  if (keys.length) {
-    t.insertAdjacentHTML("beforeend", `<div class="sect">Health trends</div><div class="trend head"><span>Measure</span><span>Latest month</span><span class="avg">12-month average</span><span>Last 2 years</span></div>`);
+  if (!keys.length) { t.innerHTML = `<p class="src">Add a reading above, or import Apple Health below, to see your trends.</p>`; return; }
+  {
+    t.insertAdjacentHTML("beforeend", `<div class="trend head"><span>Measure</span><span>Latest month</span><span class="avg">12-month average</span><span>Last 2 years</span></div>`);
     for (const k of keys) {
       if (k === "bp") { t.appendChild(bpRow()); continue; }
-      const m = Object.values(METRICS).find(x => x.key === k), months = Object.keys(apple.trends[k]).sort(), last = months.at(-1);
+      const m = Object.values(METRICS).find(x => x.key === k), tr = trendOf(k), months = Object.keys(tr).sort(), last = months.at(-1);
       const fmt = x => (+x).toLocaleString(undefined, { maximumFractionDigits: m.dp, minimumFractionDigits: m.dp });
-      const unit = (apple.units[k] || m.unit || "").replace("count/min", "bpm");
-      const yr = months.slice(-12).map(x => apple.trends[k][x]), avg = yr.reduce((a, b) => a + b, 0) / yr.length;
-      const series = months.slice(-24).map(x => apple.trends[k][x]);
+      const unit = unitOf(k);
+      const yr = months.slice(-12).map(x => tr[x]), avg = yr.reduce((a, b) => a + b, 0) / yr.length;
+      const series = months.slice(-24).map(x => tr[x]);
       const row = document.createElement("div"); row.className = "trend click"; row.tabIndex = 0; row.title = "See full history";
-      row.innerHTML = `<span><span></span><span class="chev">›</span></span><span><b>${fmt(apple.trends[k][last])}</b> ${esc(unit)}<br><span class="src">${monthName(last)}</span></span><span class="avg">${fmt(avg)} ${esc(unit)}</span>${spark(series)}`;
+      row.innerHTML = `<span><span></span><span class="chev">›</span></span><span><b>${fmt(tr[last])}</b> ${esc(unit)}<br><span class="src">${monthName(last)}</span></span><span class="avg">${fmt(avg)} ${esc(unit)}</span>${spark(series)}`;
       row.firstChild.firstChild.textContent = m.label;
       row.onclick = () => openMetric(k); row.onkeydown = e => { if (e.key === "Enter") openMetric(k); };
       t.appendChild(row);
     }
   }
+}
+function renderClinical(c) {
   const items = apple.clinical || [];
   if (items.length) {
     c.insertAdjacentHTML("beforeend", `<div class="sect">From your doctors</div>`);
@@ -874,9 +892,106 @@ function renderApple() {
     }
   }
 }
+// ---------- readings you enter yourself (blood pressure, weight, glucose) ----------
+// Kept in their own encrypted list, so importing a newer Apple export never removes them.
+const MAN_TYPE = { bpSys: "bp", bpDia: "bp", weight: "weight", glucose: "glucose" };
+const MAN_LABEL = { bp: "Blood pressure", weight: "Weight", glucose: "Blood glucose" };
+const DEFAULT_UNIT = { weight: "lb", glucose: "mg/dL", bpSys: "mmHg", bpDia: "mmHg" };
+const unitOf = k => (apple?.units?.[k] || DEFAULT_UNIT[k] || Object.values(METRICS).find(x => x.key === k)?.unit || "").replace("count/min", "bpm");
+// converts an entered reading to the unit the chart uses
+function conv(v, from, to) {
+  if (from === to) return v;
+  if (from === "kg" && to === "lb") return v * 2.20462; if (from === "lb" && to === "kg") return v / 2.20462;
+  if (from === "mmol/L" && /mg/.test(to)) return v * 18.016; if (/mg/.test(from) && to === "mmol/L") return v / 18.016;
+  return v;
+}
+function manualPoints(k) {
+  const type = MAN_TYPE[k]; if (!type) return [];
+  return manual.filter(r => r.type === type).map(r => ({ day: r.date,
+    v: k === "bpSys" ? r.sys : k === "bpDia" ? r.dia : conv(r.value, r.unit, unitOf(k)) })).filter(p => isDay(p.day) && isFinite(p.v));
+}
+// One value per day: Apple's daily figures plus your entries (several on a day are averaged, with the day's low and high)
+function dailyOf(k) {
+  const base = appleDaily?.[k], pts = manualPoints(k);
+  if (!pts.length) return base || null;
+  const map = {};
+  if (base) { const t0 = dUTC(base.start); base.v.forEach((v, i) => { if (v == null) return; const d = new Date(t0 + i * DAY).toISOString().slice(0, 10); map[d] = [v, 1, base.lo?.[i] ?? v, base.hi?.[i] ?? v]; }); }
+  for (const p of pts) { const c = (map[p.day] ??= [0, 0, Infinity, -Infinity]); c[0] += p.v; c[1]++; c[2] = Math.min(c[2], p.v); c[3] = Math.max(c[3], p.v); }
+  const days = Object.keys(map).sort(), t0 = dUTC(days[0]), n = Math.round((dUTC(days.at(-1)) - t0) / DAY) + 1;
+  const v = new Array(n).fill(null), lo = new Array(n).fill(null), hi = new Array(n).fill(null);
+  for (const d of days) { const i = Math.round((dUTC(d) - t0) / DAY), c = map[d]; v[i] = r2(c[0] / c[1]); lo[i] = r2(c[2]); hi[i] = r2(c[3]); }
+  return { start: days[0], kind: "avg", v, lo, hi };
+}
+// One value per month for the trend rows
+function trendOf(k) {
+  const pts = manualPoints(k), tr = apple?.trends?.[k];
+  if (!pts.length) return tr || null;
+  const mo = {};
+  const sr = dailyOf(k);
+  if (appleDaily?.[k] || !tr) { const t0 = dUTC(sr.start); sr.v.forEach((v, i) => { if (v == null) return; const m = new Date(t0 + i * DAY).toISOString().slice(0, 7); const c = (mo[m] ??= [0, 0]); c[0] += v; c[1]++; }); }
+  else { for (const [m, v] of Object.entries(tr)) mo[m] = [v, 1]; for (const p of pts) { const c = (mo[p.day.slice(0, 7)] ??= [0, 0]); c[0] += p.v; c[1]++; } }
+  return Object.fromEntries(Object.entries(mo).sort().map(([m, [s, n]]) => [m, s / n]));
+}
+const addBar = type => `<div class="btnrow"><button class="ghost" data-add="${type}">+ Add a reading</button></div>`;
+const fmtEntry = r => r.type === "bp" ? `${r.sys}/${r.dia} mmHg` : `${(+r.value).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${r.unit}${r.timing ? " · " + r.timing : ""}`;
+function entriesHTML(type) {
+  const list = manual.filter(r => r.type === type).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  if (!list.length) return "";
+  return `<div class="sect">Readings you entered</div>` + list.map(r => `<div class="entry"><span>${esc(fmtD(dUTC(r.date), { month: "short", day: "numeric", year: "numeric" }))}${r.time ? " " + esc(new Date("2000-01-01T" + r.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) : ""}<span class="mine">You</span>${r.note ? `<br><span class="src">${esc(r.note)}</span>` : ""}</span><span><b>${esc(fmtEntry(r))}</b> <button class="x" data-del="${esc(r.id)}" title="Delete">✕</button></span></div>`).join("");
+}
+function wireEntries(body, type) {
+  body.querySelectorAll("[data-add]").forEach(b => b.onclick = () => openAddReading(type));
+  body.querySelectorAll("[data-del]").forEach(b => b.onclick = () => busy(b, "…", async () => {
+    if (!confirm("Delete this reading?")) return;
+    if (!(await mustBeCurrent())) return;
+    manual = manual.filter(r => r.id !== b.dataset.del); await saveBlob("manual", manual);
+    renderTrends(); openReadingView(type);
+  }));
+}
+const openReadingView = type => type === "bp" ? openBP() : openMetric(type);
+function openAddReading(type) {
+  const body = openPanel(`Add ${MAN_LABEL[type].toLowerCase()} reading`);
+  const now = new Date(), today = new Date(now - now.getTimezoneOffset() * 6e4).toISOString().slice(0, 10), time = now.toTimeString().slice(0, 5);
+  const wUnit = unitOf("weight") === "kg" ? "kg" : "lb", gUnit = unitOf("glucose") === "mmol/L" ? "mmol/L" : "mg/dL";
+  const fields = type === "bp"
+    ? `<div><label for="rSys">Systolic (top number)</label><input id="rSys" type="number" inputmode="numeric" min="50" max="260" placeholder="e.g. 128"></div>
+       <div><label for="rDia">Diastolic (bottom number)</label><input id="rDia" type="number" inputmode="numeric" min="30" max="160" placeholder="e.g. 82"></div>`
+    : type === "weight"
+    ? `<div><label for="rVal">Weight</label><input id="rVal" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 195.4"></div>
+       <div><label for="rUnit">Unit</label><select id="rUnit"><option${wUnit === "lb" ? " selected" : ""}>lb</option><option${wUnit === "kg" ? " selected" : ""}>kg</option></select></div>`
+    : `<div><label for="rVal">Blood glucose</label><input id="rVal" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 98"></div>
+       <div><label for="rUnit">Unit</label><select id="rUnit"><option${gUnit === "mg/dL" ? " selected" : ""}>mg/dL</option><option${gUnit === "mmol/L" ? " selected" : ""}>mmol/L</option></select></div>
+       <div class="wide"><label for="rTiming">When was it taken?</label><select id="rTiming"><option>Fasting</option><option>Before a meal</option><option>After a meal</option><option>Bedtime</option><option>Other</option></select></div>`;
+  body.innerHTML = `<div class="form-grid">${fields}
+    <div><label for="rDate">Date</label><input id="rDate" type="date" value="${today}" max="${today}"></div>
+    <div><label for="rTime">Time</label><input id="rTime" type="time" value="${time}"></div>
+    <div class="wide"><label for="rNote">Note (optional)</label><input id="rNote" placeholder="e.g. after a walk, left arm"></div></div>
+    <button id="rSave" style="margin-top:12px">Save reading</button> <button class="ghost" id="rCancel">Cancel</button>`;
+  $("rCancel").onclick = closePanel;
+  (type === "bp" ? $("rSys") : $("rVal")).focus();
+  $("rSave").onclick = () => busy($("rSave"), "Saving...", async () => {
+    const date = $("rDate").value, r = { id: crypto.randomUUID(), type, date, time: $("rTime").value, note: $("rNote").value.trim(), added: new Date().toISOString() };
+    if (!isDay(date)) return alert("Choose the date of the reading.");
+    if (type === "bp") {
+      r.sys = Math.round(+$("rSys").value); r.dia = Math.round(+$("rDia").value);
+      if (!(r.sys >= 50 && r.sys <= 260 && r.dia >= 30 && r.dia <= 160)) return alert("Enter both numbers, for example 128 over 82.");
+      if (r.dia >= r.sys) return alert("The top number (systolic) should be higher than the bottom number (diastolic).");
+    } else {
+      r.value = +$("rVal").value; r.unit = $("rUnit").value;
+      const ok = type === "weight" ? (r.unit === "kg" ? r.value >= 20 && r.value <= 320 : r.value >= 40 && r.value <= 700) : (r.unit === "mmol/L" ? r.value >= 1 && r.value <= 40 : r.value >= 20 && r.value <= 700);
+      if (!ok) return alert(`Enter a ${type === "weight" ? "weight" : "glucose reading"} in ${r.unit}.`);
+      if (type === "glucose") r.timing = $("rTiming").value;
+    }
+    if (!(await mustBeCurrent())) return;
+    manual.push(r); await saveBlob("manual", manual);
+    renderTrends(); openReadingView(type);
+  });
+}
+$("addBP").onclick = () => openAddReading("bp"); $("addWeight").onclick = () => openAddReading("weight"); $("addGlucose").onclick = () => openAddReading("glucose");
+
 // ---------- blood pressure: systolic and diastolic together ----------
 function bpRow() {
-  const S = apple.trends.bpSys, D = apple.trends.bpDia, months = Object.keys(S).filter(m => D[m] != null).sort(), last = months.at(-1);
+  const S = trendOf("bpSys"), D = trendOf("bpDia"), months = Object.keys(S).filter(m => D[m] != null).sort(), last = months.at(-1);
   const r0 = Math.round, yr = months.slice(-12), avgS = yr.reduce((a, m) => a + S[m], 0) / yr.length, avgD = yr.reduce((a, m) => a + D[m], 0) / yr.length;
   const row = document.createElement("div"); row.className = "trend click"; row.tabIndex = 0; row.title = "See full history";
   row.innerHTML = `<span><span>Blood pressure</span><span class="chev">›</span></span><span><b>${r0(S[last])}/${r0(D[last])}</b> mmHg<br><span class="src">${monthName(last)}</span></span><span class="avg">${r0(avgS)}/${r0(avgD)} mmHg</span>${spark(months.slice(-24).map(m => S[m]), months.slice(-24).map(m => D[m]))}`;
@@ -884,20 +999,22 @@ function bpRow() {
   return row;
 }
 function openBP() {
-  const body = openPanel("Blood pressure"), S = appleDaily?.bpSys, D = appleDaily?.bpDia, r0 = Math.round;
+  const body = openPanel("Blood pressure"), S = dailyOf("bpSys"), D = dailyOf("bpDia"), r0 = Math.round;
   const bp = g => `${r0(g.v)}/${r0(g.v2)}`;
   if (!S || !D) { // older import without daily history
-    const ms = Object.keys(apple.trends.bpSys).filter(m => apple.trends.bpDia[m] != null).sort();
-    const groups = ms.map(m => ({ label: monYY(dUTC(m + "-01")), long: monthName(m), v: apple.trends.bpSys[m], v2: apple.trends.bpDia[m] }));
-    body.innerHTML = `<div class="note">Import your Apple Health export again to see day-by-day history. Showing monthly averages for now.</div><div id="pChart"></div><div class="hist" id="pHist"></div>`;
+    const TS = trendOf("bpSys"), TD = trendOf("bpDia"), ms = Object.keys(TS).filter(m => TD[m] != null).sort();
+    const groups = ms.map(m => ({ label: monYY(dUTC(m + "-01")), long: monthName(m), v: TS[m], v2: TD[m] }));
+    body.innerHTML = addBar("bp") + `<div class="note">Import your Apple Health export again to see day-by-day history. Showing monthly averages for now.</div><div id="pChart"></div><div class="hist" id="pHist"></div>`;
     drawChart($("pChart"), groups, { pair: true }, () => {});
     $("pHist").innerHTML = groups.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${bp(g)} mmHg</span></div>`).join("");
+    body.insertAdjacentHTML("beforeend", entriesHTML("bp")); wireEntries(body, "bp");
     return;
   }
   const endT = Math.max(dUTC(S.start) + (S.v.length - 1) * DAY, dUTC(D.start) + (D.v.length - 1) * DAY);
-  body.innerHTML = `<div class="seg">${RANGES.map(([r, l]) => `<button data-r="${r}" title="${l}">${r}</button>`).join("")}</div>
+  body.innerHTML = addBar("bp") + `<div class="seg">${RANGES.map(([r, l]) => `<button data-r="${r}" title="${l}">${r}</button>`).join("")}</div>
     <div class="readout"><div class="lab" id="pLab"></div><div class="big" id="pBig"></div><div class="when" id="pWhen"></div></div>
-    <div id="pChart"></div><div class="src" id="pHint"></div><div class="hist" id="pHist"></div>`;
+    <div id="pChart"></div><div class="src" id="pHint"></div><div class="hist" id="pHist"></div>` + entriesHTML("bp");
+  wireEntries(body, "bp");
   const show = range => {
     body.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.r === range));
     const gs = buckets(S, range, endT), gd = buckets(D, range, endT);
@@ -1015,23 +1132,24 @@ function drawChart(box, groups, opt, onPick) {
 }
 
 function openMetric(k) {
-  const m = Object.values(METRICS).find(x => x.key === k), unit = (apple.units[k] || m.unit || "").replace("count/min", "bpm");
+  const m = Object.values(METRICS).find(x => x.key === k), unit = unitOf(k);
   const fmt = x => (+x).toLocaleString(undefined, { maximumFractionDigits: m.dp, minimumFractionDigits: m.dp });
-  const body = openPanel(m.label);
-  let sr = appleDaily?.[k];
+  const body = openPanel(m.label), mk = MAN_TYPE[k];
+  let sr = dailyOf(k);
   if (!sr) { // imported before daily history was saved: fall back to monthly values
-    const months = Object.keys(apple.trends[k]).sort();
-    sr = null;
-    body.innerHTML = `<div class="note">Import your Apple Health export again to see day-by-day history. Showing monthly averages for now.</div><div id="pChart"></div><div class="hist" id="pHist"></div>`;
-    const groups = months.map(mo => ({ label: monthName(mo), long: monthName(mo), v: apple.trends[k][mo] }));
+    const tr = trendOf(k), months = Object.keys(tr).sort();
+    body.innerHTML = (mk ? addBar(mk) : "") + `<div class="note">Import your Apple Health export again to see day-by-day history. Showing monthly averages for now.</div><div id="pChart"></div><div class="hist" id="pHist"></div>`;
+    const groups = months.map(mo => ({ label: monthName(mo), long: monthName(mo), v: tr[mo] }));
     drawChart($("pChart"), groups, { bars: m.kind !== "avg" }, () => {});
     $("pHist").innerHTML = groups.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${fmt(g.v)} ${esc(unit)}</span></div>`).join("");
+    if (mk) { body.insertAdjacentHTML("beforeend", entriesHTML(mk)); wireEntries(body, mk); }
     return;
   }
   const isAvg = sr.kind === "avg", what = isAvg ? "Average" : m.kind === "sleep" ? "Average per night" : "Daily average";
-  body.innerHTML = `<div class="seg">${RANGES.map(([r, l]) => `<button data-r="${r}" title="${l}">${r}</button>`).join("")}</div>
+  body.innerHTML = (mk ? addBar(mk) : "") + `<div class="seg">${RANGES.map(([r, l]) => `<button data-r="${r}" title="${l}">${r}</button>`).join("")}</div>
     <div class="readout"><div class="lab" id="pLab"></div><div class="big" id="pBig"></div><div class="when" id="pWhen"></div></div>
-    <div id="pChart"></div><div class="src" id="pHint"></div><div class="hist" id="pHist"></div>`;
+    <div id="pChart"></div><div class="src" id="pHint"></div><div class="hist" id="pHist"></div>` + (mk ? entriesHTML(mk) : "");
+  if (mk) wireEntries(body, mk);
   const show = range => {
     body.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.r === range));
     const groups = buckets(sr, range), have = groups.filter(g => g.v != null);
@@ -1041,8 +1159,9 @@ function openMetric(k) {
     const span = have.length ? `${groups[0].long.replace("Week of ", "")} – ${groups.at(-1).long.replace("Week of ", "")}` : "";
     const setRead = g => {
       if (!g) {
-        $("pLab").textContent = isAvg && lows.length ? "Range" : what;
-        $("pBig").innerHTML = avgAll == null ? "No data" : isAvg && lows.length ? `${fmt(Math.min(...lows))}–${fmt(Math.max(...highs))} <small>${esc(unit)} · avg ${fmt(avgAll)}</small>` : `${fmt(avgAll)} <small>${esc(unit)}</small>`;
+        const spread = isAvg && lows.length && Math.min(...lows) < Math.max(...highs);
+        $("pLab").textContent = spread ? "Range" : what;
+        $("pBig").innerHTML = avgAll == null ? "No data" : spread ? `${fmt(Math.min(...lows))}–${fmt(Math.max(...highs))} <small>${esc(unit)} · avg ${fmt(avgAll)}</small>` : `${fmt(avgAll)} <small>${esc(unit)}</small>`;
         $("pWhen").textContent = span;
       } else {
         $("pLab").textContent = days ? (isAvg ? "Daily average" : m.kind === "sleep" ? "Asleep" : "Total") : what;
@@ -1220,13 +1339,16 @@ $("readLabs").onclick = () => busy($("readLabs"), "Reading...", async () => {
 
 // A compact text version of the Apple data for the AI summary
 function appleForAI() {
-  if (!apple) return "";
-  let out = "MONTHLY TRENDS (last 24 months)\n";
+  if (!apple && !manual.length) return "";
+  let out = "MONTHLY TRENDS (last 24 months; Apple Health plus readings the patient entered)\n";
   for (const k of AI_ORDER) {
-    const tr = apple.trends[k]; if (!tr) continue;
+    const tr = trendOf(k); if (!tr || !Object.keys(tr).length) continue;
     const m = Object.values(METRICS).find(x => x.key === k);
-    out += `${m.label} (${apple.units[k] || ""}): ` + Object.keys(tr).sort().slice(-24).map(mo => `${mo} ${(+tr[mo]).toFixed(m.dp)}`).join("; ") + "\n";
+    out += `${m.label} (${unitOf(k)}): ` + Object.keys(tr).sort().slice(-24).map(mo => `${mo} ${(+tr[mo]).toFixed(m.dp)}`).join("; ") + "\n";
   }
+  const recent = manual.filter(r => r.type === "glucose" && r.timing).slice(-60);
+  if (recent.length) out += "Recent glucose readings with timing: " + recent.map(r => `${r.date} ${r.value} ${r.unit} (${r.timing})`).join("; ") + "\n";
+  if (!apple) return out;
   const cutoff = new Date(Date.now() - 3 * 365 * 864e5).toISOString().slice(0, 10);
   out += "\nCLINICAL RECORDS FROM PROVIDERS\n";
   for (const kind of KINDS) {
