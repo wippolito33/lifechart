@@ -29,7 +29,7 @@
 <div id="login" class="card screen">
  <h2>Unlock your records</h2>
  <p style="margin-top:-8px;color:#2e4a7d"><em>Your health story, all in one place.</em></p>
- <input id="user" placeholder="Username" autocomplete="username">
+ <input id="user" type="email" placeholder="Email address" autocomplete="email">
  <input id="pass" type="password" placeholder="Passphrase" autocomplete="current-password">
  <button id="unlock">Unlock</button>
  <div class="row"><button class="link" id="toSignup">Create an account</button><button class="link" id="toReset">Forgot passphrase?</button></div>
@@ -38,7 +38,7 @@
 
 <div id="signup" class="card screen hidden">
  <h2>Create your LifeChart</h2>
- <input id="s_user" placeholder="Choose a username" autocomplete="username">
+ <input id="s_user" type="email" placeholder="Email address (this is how you sign in)" autocomplete="email">
  <div class="grid"><input id="s_pass" type="password" placeholder="Passphrase (12+ characters)" autocomplete="new-password"><input id="s_pass2" type="password" placeholder="Confirm passphrase" autocomplete="new-password"></div>
  <div id="s_fields"></div>
  <button id="create">Create account</button> <button class="link back">Back to sign in</button>
@@ -55,7 +55,7 @@
 
 <div id="reset" class="card screen hidden">
  <h2>Reset your passphrase</h2>
- <input id="r_user" placeholder="Username" autocomplete="username">
+ <input id="r_user" type="email" placeholder="Email address" autocomplete="email">
  <input id="r_code" placeholder="Recovery code" style="text-transform:uppercase">
  <div class="grid"><input id="r_pass" type="password" placeholder="New passphrase (12+ characters)" autocomplete="new-password"><input id="r_pass2" type="password" placeholder="Confirm new passphrase" autocomplete="new-password"></div>
  <button id="doReset">Reset passphrase</button> <button class="link back">Back to sign in</button>
@@ -82,7 +82,7 @@
 const CHUNK = 3 * 1024 * 1024, enc = new TextEncoder(), dec = new TextDecoder(), $ = id => document.getElementById(id);
 const FIELDS = [
   ["fullName", "Full name"], ["dob", "Date of birth", "date"], ["mobile", "Mobile phone", "tel"],
-  ["email", "Email", "email"], ["address", "Home address"], ["emName", "Emergency contact name"],
+  ["address", "Home address"], ["emName", "Emergency contact name"],
   ["emPhone", "Emergency contact phone", "tel"], ["emRel", "Emergency contact relationship"],
   ["physician", "Primary physician"]
 ];
@@ -92,6 +92,8 @@ const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")
 const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
 const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const vaultId = async u => hex(await crypto.subtle.digest("SHA-256", enc.encode("vault:" + u.toLowerCase())));
+const normEmail = e => e.trim().toLowerCase();
+const validEmail = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 const normCode = c => c.toUpperCase().replace(/[^A-Z0-9]/g, "");
 const pwSalt = u => "lifechart:pw:" + u.toLowerCase(), rcSalt = u => "lifechart:rc:" + u.toLowerCase();
 
@@ -151,31 +153,32 @@ $("pass").onkeydown = e => { if (e.key === "Enter") $("unlock").click(); };
 
 // Sign in
 $("unlock").onclick = () => busy($("unlock"), "Unlocking...", async () => {
-  const u = $("user").value.trim(), p = $("pass").value;
-  if (!u || !p) return alert("Enter your username and passphrase.");
+  const u = normEmail($("user").value), p = $("pass").value;
+  if (!validEmail(u) || !p) return alert("Enter your email address and passphrase.");
   const vid = await vaultId(u), k = await stretch(p, pwSalt(u));
   auth = { "x-vault": vid, "x-token": k.token };
   const r = await api("keys");
-  if (r.status === 401) return alert((await exists(vid)) ? "Wrong passphrase." : "No account with that username yet. Choose Create an account.");
+  if (r.status === 401) return alert((await exists(vid)) ? "Wrong passphrase." : "No account with that email yet. Choose Create an account.");
   masterKey = await importMaster(new Uint8Array(await open(k.wrapKey, fromB64(await r.text()))));
   $("pass").value = ""; await enterApp();
 });
 
 // Create an account
 $("create").onclick = () => busy($("create"), "Creating...", async () => {
-  const u = $("s_user").value.trim(), p = $("s_pass").value, info = readFields("s_");
-  if (!u) return alert("Choose a username.");
+  const u = normEmail($("s_user").value), p = $("s_pass").value, info = readFields("s_");
+  if (!validEmail(u)) return alert("Enter a valid email address.");
+  info.email = u;
   if (p.length < 12) return alert("Your passphrase needs at least 12 characters.");
   if (p !== $("s_pass2").value) return alert("The passphrases don't match.");
   if (!info.fullName) return alert("Please enter your full name.");
   const vid = await vaultId(u);
-  if (await exists(vid)) return alert("That username is taken.");
+  if (await exists(vid)) return alert("There is already an account with that email. Try signing in.");
   const master = crypto.getRandomValues(new Uint8Array(32)), code = makeCode();
   const k = await stretch(p, pwSalt(u)), rk = await stretch(normCode(code), rcSalt(u));
   auth = { "x-vault": vid, "x-token": k.token };
   const r = await api("signup", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ rtoken: rk.token, wrapP: toB64(await seal(k.wrapKey, master)), wrapR: toB64(await seal(rk.wrapKey, master)) }) });
-  if (r.status === 409) return alert("That username is taken.");
+  if (r.status === 409) return alert("There is already an account with that email. Try signing in.");
   if (!r.ok) throw new Error("could not create the account");
   masterKey = await importMaster(master);
   profile = info; index = [];
@@ -187,7 +190,7 @@ $("create").onclick = () => busy($("create"), "Creating...", async () => {
 // Recovery code screen
 $("saved").onchange = () => { $("continue").disabled = !$("saved").checked; };
 $("dlCode").onclick = () => {
-  const txt = `LifeChart recovery code\nUsername: ${pendingUser}\nRecovery code: ${pendingCode}\nCreated: ${new Date().toLocaleDateString()}\n\nKeep this somewhere safe. It is the only way to reset your passphrase.`;
+  const txt = `LifeChart recovery code\nEmail: ${pendingUser}\nRecovery code: ${pendingCode}\nCreated: ${new Date().toLocaleDateString()}\n\nKeep this somewhere safe. It is the only way to reset your passphrase.`;
   Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([txt], { type: "text/plain" })), download: "LifeChart-recovery-code.txt" }).click();
 };
 $("printCode").onclick = () => window.print();
@@ -195,14 +198,14 @@ $("continue").onclick = () => { pendingCode = ""; $("codeBox").textContent = "";
 
 // Forgot passphrase
 $("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {
-  const u = $("r_user").value.trim(), code = normCode($("r_code").value), p = $("r_pass").value;
-  if (!u || code.length !== 24) return alert("Enter your username and your 24-character recovery code.");
+  const u = normEmail($("r_user").value), code = normCode($("r_code").value), p = $("r_pass").value;
+  if (!validEmail(u) || code.length !== 24) return alert("Enter your email address and your 24-character recovery code.");
   if (p.length < 12) return alert("Your new passphrase needs at least 12 characters.");
   if (p !== $("r_pass2").value) return alert("The passphrases don't match.");
   const vid = await vaultId(u), rk = await stretch(code, rcSalt(u));
   const rh = { "x-vault": vid, "x-rtoken": rk.token };
   const r = await fetch("/api/recover", { headers: rh });
-  if (!r.ok) return alert("That username and recovery code don't match.");
+  if (!r.ok) return alert("That email and recovery code don't match.");
   const master = new Uint8Array(await open(rk.wrapKey, fromB64(await r.text())));
   const k = await stretch(p, pwSalt(u));
   const r2 = await fetch("/api/reset", { method: "POST", headers: { ...rh, "content-type": "application/json" },
@@ -216,7 +219,7 @@ $("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {
 // Profile
 function renderProfile() {
   const v = $("profileView"); v.innerHTML = "";
-  FIELDS.forEach(([k, l]) => {
+  [["email", "Email (sign-in)"], ...FIELDS].forEach(([k, l]) => {
     if (!profile[k]) return;
     const d = document.createElement("div"), s = document.createElement("span");
     s.textContent = l; d.append(s, profile[k]); v.appendChild(d);
@@ -230,7 +233,7 @@ $("editProfile").onclick = () => {
   $("editProfile").textContent = hidden ? "Edit" : "Cancel";
 };
 $("saveProfile").onclick = () => busy($("saveProfile"), "Saving...", async () => {
-  profile = readFields("p_"); await saveBlob("profile", profile); renderProfile();
+  profile = { ...readFields("p_"), email: profile.email }; await saveBlob("profile", profile); renderProfile();
   $("profileEdit").classList.add("hidden"); $("profileView").classList.remove("hidden"); $("editProfile").textContent = "Edit";
 });
 
