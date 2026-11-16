@@ -9,24 +9,64 @@
  .card{background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;border:1px solid #dbe8f7;box-shadow:0 2px 10px #1f6fb21a}
  input,button{font:inherit;padding:9px;margin:4px 0;border-radius:6px;border:1px solid #c9dcf2}
  input{width:100%;box-sizing:border-box} button{background:linear-gradient(#2a86d1,#1f6fb2);color:#fff;cursor:pointer;border:0}
+ button:disabled{opacity:.5;cursor:default}
  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px} h3{margin:18px 0 6px;color:#2e4a7d}
  .rec{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding:8px 0;gap:8px}
  .tag{background:#e3f0fc;color:#1f6fb2;border-radius:10px;padding:2px 8px;font-size:12px;margin-right:4px}
  .src{font-size:12px;color:#777} .hidden{display:none} #status{color:#1f6fb2;font-size:14px}
  .brand{display:flex;align-items:center;gap:10px;font-size:21px;font-weight:700;letter-spacing:.3px}
  .brand b{color:#1f6fb2}
+ .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+ .link{background:none;color:#1f6fb2;padding:4px 0;text-decoration:underline}
+ .code{font-family:ui-monospace,monospace;font-size:22px;letter-spacing:2px;background:#e3f0fc;color:#0b2e59;padding:14px;border-radius:10px;text-align:center;margin:10px 0;word-break:break-all}
+ .pf div{padding:5px 0;border-bottom:1px solid #f0f4fa} .pf span{display:inline-block;width:210px;color:#5b7493;font-size:13px}
+ label{font-size:13px;color:#5b7493}
+ @media(max-width:600px){.grid{grid-template-columns:1fr}.pf span{display:block;width:auto}}
 </style></head><body>
 <header><div class="brand"><svg width="38" height="38" viewBox="0 0 48 48" aria-label="LifeChart logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b2e59"/><stop offset="1" stop-color="#5aa9e6"/></linearGradient></defs><rect width="48" height="48" rx="12" fill="url(#lg)"/><path d="M6 26h9l4-9 6 17 5-12 3 4h9" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Life<b>Chart</b></span></div><button id="logout" class="hidden">Lock</button></header>
 <main>
-<div id="login" class="card">
+
+<div id="login" class="card screen">
  <h2>Unlock your records</h2>
  <p style="margin-top:-8px;color:#2e4a7d"><em>Your health story, all in one place.</em></p>
  <input id="user" placeholder="Username" autocomplete="username">
- <input id="pass" type="password" placeholder="Passphrase (12+ characters)" autocomplete="current-password">
- <button id="unlock">Unlock / Create vault</button>
- <p class="src">Your passphrase never leaves this device. If it is lost, your records cannot be recovered.</p>
+ <input id="pass" type="password" placeholder="Passphrase" autocomplete="current-password">
+ <button id="unlock">Unlock</button>
+ <div class="row"><button class="link" id="toSignup">Create an account</button><button class="link" id="toReset">Forgot passphrase?</button></div>
+ <p class="src">Your passphrase never leaves this device. Your records are encrypted before they are uploaded.</p>
 </div>
-<div id="app" class="hidden">
+
+<div id="signup" class="card screen hidden">
+ <h2>Create your LifeChart</h2>
+ <input id="s_user" placeholder="Choose a username" autocomplete="username">
+ <div class="grid"><input id="s_pass" type="password" placeholder="Passphrase (12+ characters)" autocomplete="new-password"><input id="s_pass2" type="password" placeholder="Confirm passphrase" autocomplete="new-password"></div>
+ <div id="s_fields"></div>
+ <button id="create">Create account</button> <button class="link back">Back to sign in</button>
+</div>
+
+<div id="recovery" class="card screen hidden">
+ <h2>Save your recovery code</h2>
+ <p>If you ever forget your passphrase, this code is the only way back into your records. Print it or save it somewhere safe. It will not be shown again.</p>
+ <div class="code" id="codeBox"></div>
+ <button id="dlCode">Download code</button> <button id="printCode">Print</button>
+ <p><label><input type="checkbox" id="saved" style="width:auto"> I have saved my recovery code</label></p>
+ <button id="continue" disabled>Continue to my records</button>
+</div>
+
+<div id="reset" class="card screen hidden">
+ <h2>Reset your passphrase</h2>
+ <input id="r_user" placeholder="Username" autocomplete="username">
+ <input id="r_code" placeholder="Recovery code" style="text-transform:uppercase">
+ <div class="grid"><input id="r_pass" type="password" placeholder="New passphrase (12+ characters)" autocomplete="new-password"><input id="r_pass2" type="password" placeholder="Confirm new passphrase" autocomplete="new-password"></div>
+ <button id="doReset">Reset passphrase</button> <button class="link back">Back to sign in</button>
+</div>
+
+<div id="app" class="screen hidden">
+ <div class="card">
+  <div class="row"><h2>My profile</h2><button id="editProfile">Edit</button></div>
+  <div id="profileView" class="pf"></div>
+  <div id="profileEdit" class="hidden"><div id="p_fields"></div><button id="saveProfile">Save profile</button></div>
+ </div>
  <div class="card">
   <h2>Add a record</h2>
   <input id="file" type="file" multiple>
@@ -39,67 +79,185 @@
 </div>
 </main>
 <script>
-const CHUNK = 3 * 1024 * 1024, enc = new TextEncoder(), $ = id => document.getElementById(id);
-let key, auth, index = [];
-const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
+const CHUNK = 3 * 1024 * 1024, enc = new TextEncoder(), dec = new TextDecoder(), $ = id => document.getElementById(id);
+const FIELDS = [
+  ["fullName", "Full name"], ["dob", "Date of birth", "date"], ["mobile", "Mobile phone", "tel"],
+  ["email", "Email", "email"], ["address", "Home address"], ["emName", "Emergency contact name"],
+  ["emPhone", "Emergency contact phone", "tel"], ["emRel", "Emergency contact relationship"],
+  ["physician", "Primary physician"]
+];
+let masterKey, auth, index = [], profile = {}, pendingCode = "", pendingUser = "";
 
-async function derive(user, pass) {
-  const base = await crypto.subtle.importKey("raw", enc.encode(pass), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: enc.encode("healthvault:" + user.toLowerCase()), iterations: 600000, hash: "SHA-256" }, base, 512);
-  key = await crypto.subtle.importKey("raw", bits.slice(0, 32), "AES-GCM", false, ["encrypt", "decrypt"]);
-  auth = { "x-vault": hex(await crypto.subtle.digest("SHA-256", enc.encode("vault:" + user.toLowerCase()))), "x-token": hex(bits.slice(32)) };
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
+const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
+const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const vaultId = async u => hex(await crypto.subtle.digest("SHA-256", enc.encode("vault:" + u.toLowerCase())));
+const normCode = c => c.toUpperCase().replace(/[^A-Z0-9]/g, "");
+const pwSalt = u => "lifechart:pw:" + u.toLowerCase(), rcSalt = u => "lifechart:rc:" + u.toLowerCase();
+
+// Turns a passphrase or recovery code into a key that locks the master key, plus a login token
+async function stretch(secret, salt) {
+  const base = await crypto.subtle.importKey("raw", enc.encode(secret), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: enc.encode(salt), iterations: 600000, hash: "SHA-256" }, base, 512);
+  return { wrapKey: await crypto.subtle.importKey("raw", bits.slice(0, 32), "AES-GCM", false, ["encrypt", "decrypt"]), token: hex(bits.slice(32)) };
 }
-async function seal(data) {
+const importMaster = raw => crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+async function seal(key, data) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
   const out = new Uint8Array(12 + ct.byteLength); out.set(iv); out.set(new Uint8Array(ct), 12); return out;
 }
-const open = buf => crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, key, buf.slice(12));
-const api = (path, opts = {}) => fetch("/api/" + path, { ...opts, headers: { ...auth, ...(opts.headers || {}) } });
-const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
-
-async function saveIndex() { await api("index", { method: "PUT", body: toB64(await seal(enc.encode(JSON.stringify(index)))) }); }
-async function loadIndex() {
-  const r = await api("index"); if (r.status === 404) { index = []; return; }
-  const b = Uint8Array.from(atob(await r.text()), c => c.charCodeAt(0));
-  index = JSON.parse(new TextDecoder().decode(await open(b)));
+const open = (key, buf) => crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, key, buf.slice(12));
+function makeCode() {
+  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", r = crypto.getRandomValues(new Uint8Array(24));
+  return [...r].map(x => A[x % 32]).join("").match(/.{4}/g).join("-");
 }
 
-$("unlock").onclick = async () => {
-  const u = $("user").value.trim(), p = $("pass").value;
-  if (!u || p.length < 12) return alert("Enter a username and a passphrase of at least 12 characters.");
-  $("unlock").textContent = "Unlocking..."; await derive(u, p);
-  const r = await api("setup", { method: "POST" });
-  $("unlock").textContent = "Unlock / Create vault";
-  if (r.status === 409) return alert("Wrong passphrase for this username.");
-  try { await loadIndex(); } catch { return alert("Could not unlock. Check your passphrase."); }
-  $("pass").value = ""; $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("logout").classList.remove("hidden"); render();
-};
-$("logout").onclick = () => location.reload();
+const api = (path, opts = {}) => fetch("/api/" + path, { ...opts, headers: { ...auth, ...(opts.headers || {}) } });
+async function saveBlob(name, obj) {
+  const r = await api(name, { method: "PUT", body: toB64(await seal(masterKey, enc.encode(JSON.stringify(obj)))) });
+  if (!r.ok) throw new Error("could not save " + name);
+}
+async function loadBlob(name, fallback) {
+  const r = await api(name); if (r.status === 404) return fallback;
+  return JSON.parse(dec.decode(await open(masterKey, fromB64(await r.text()))));
+}
 
-$("upload").onclick = async () => {
+function show(id) {
+  document.querySelectorAll(".screen").forEach(e => e.classList.toggle("hidden", e.id !== id));
+  $("logout").classList.toggle("hidden", id !== "app");
+}
+const fieldsHTML = p => `<div class="grid">` + FIELDS.map(([k, l, t]) => `<div><label for="${p}${k}">${l}</label><input id="${p}${k}" type="${t || "text"}"></div>`).join("") + `</div>`;
+$("s_fields").innerHTML = fieldsHTML("s_"); $("p_fields").innerHTML = fieldsHTML("p_");
+const readFields = p => Object.fromEntries(FIELDS.map(([k]) => [k, $(p + k).value.trim()]));
+const fillFields = (p, o) => FIELDS.forEach(([k]) => { $(p + k).value = o[k] || ""; });
+const exists = async vid => (await (await fetch("/api/exists", { headers: { "x-vault": vid } })).text()) === "yes";
+
+async function busy(btn, label, fn) {
+  const t = btn.textContent; btn.disabled = true; btn.textContent = label;
+  try { await fn(); } catch (e) { alert("Something went wrong: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = t; }
+}
+async function enterApp() {
+  index = await loadBlob("index", []); profile = await loadBlob("profile", {});
+  renderProfile(); render(); show("app");
+}
+
+$("toSignup").onclick = () => show("signup");
+$("toReset").onclick = () => show("reset");
+document.querySelectorAll(".back").forEach(b => b.onclick = () => show("login"));
+$("logout").onclick = () => location.reload();
+$("pass").onkeydown = e => { if (e.key === "Enter") $("unlock").click(); };
+
+// Sign in
+$("unlock").onclick = () => busy($("unlock"), "Unlocking...", async () => {
+  const u = $("user").value.trim(), p = $("pass").value;
+  if (!u || !p) return alert("Enter your username and passphrase.");
+  const vid = await vaultId(u), k = await stretch(p, pwSalt(u));
+  auth = { "x-vault": vid, "x-token": k.token };
+  const r = await api("keys");
+  if (r.status === 401) return alert((await exists(vid)) ? "Wrong passphrase." : "No account with that username yet. Choose Create an account.");
+  masterKey = await importMaster(new Uint8Array(await open(k.wrapKey, fromB64(await r.text()))));
+  $("pass").value = ""; await enterApp();
+});
+
+// Create an account
+$("create").onclick = () => busy($("create"), "Creating...", async () => {
+  const u = $("s_user").value.trim(), p = $("s_pass").value, info = readFields("s_");
+  if (!u) return alert("Choose a username.");
+  if (p.length < 12) return alert("Your passphrase needs at least 12 characters.");
+  if (p !== $("s_pass2").value) return alert("The passphrases don't match.");
+  if (!info.fullName) return alert("Please enter your full name.");
+  const vid = await vaultId(u);
+  if (await exists(vid)) return alert("That username is taken.");
+  const master = crypto.getRandomValues(new Uint8Array(32)), code = makeCode();
+  const k = await stretch(p, pwSalt(u)), rk = await stretch(normCode(code), rcSalt(u));
+  auth = { "x-vault": vid, "x-token": k.token };
+  const r = await api("signup", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ rtoken: rk.token, wrapP: toB64(await seal(k.wrapKey, master)), wrapR: toB64(await seal(rk.wrapKey, master)) }) });
+  if (r.status === 409) return alert("That username is taken.");
+  if (!r.ok) throw new Error("could not create the account");
+  masterKey = await importMaster(master);
+  profile = info; index = [];
+  await saveBlob("profile", profile); await saveBlob("index", index);
+  pendingCode = code; pendingUser = u; $("codeBox").textContent = code;
+  $("s_pass").value = $("s_pass2").value = ""; show("recovery");
+});
+
+// Recovery code screen
+$("saved").onchange = () => { $("continue").disabled = !$("saved").checked; };
+$("dlCode").onclick = () => {
+  const txt = `LifeChart recovery code\nUsername: ${pendingUser}\nRecovery code: ${pendingCode}\nCreated: ${new Date().toLocaleDateString()}\n\nKeep this somewhere safe. It is the only way to reset your passphrase.`;
+  Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([txt], { type: "text/plain" })), download: "LifeChart-recovery-code.txt" }).click();
+};
+$("printCode").onclick = () => window.print();
+$("continue").onclick = () => { pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); show("app"); };
+
+// Forgot passphrase
+$("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {
+  const u = $("r_user").value.trim(), code = normCode($("r_code").value), p = $("r_pass").value;
+  if (!u || code.length !== 24) return alert("Enter your username and your 24-character recovery code.");
+  if (p.length < 12) return alert("Your new passphrase needs at least 12 characters.");
+  if (p !== $("r_pass2").value) return alert("The passphrases don't match.");
+  const vid = await vaultId(u), rk = await stretch(code, rcSalt(u));
+  const rh = { "x-vault": vid, "x-rtoken": rk.token };
+  const r = await fetch("/api/recover", { headers: rh });
+  if (!r.ok) return alert("That username and recovery code don't match.");
+  const master = new Uint8Array(await open(rk.wrapKey, fromB64(await r.text())));
+  const k = await stretch(p, pwSalt(u));
+  const r2 = await fetch("/api/reset", { method: "POST", headers: { ...rh, "content-type": "application/json" },
+    body: JSON.stringify({ token: k.token, wrapP: toB64(await seal(k.wrapKey, master)) }) });
+  if (!r2.ok) throw new Error("could not save the new passphrase");
+  auth = { "x-vault": vid, "x-token": k.token }; masterKey = await importMaster(master);
+  $("r_code").value = $("r_pass").value = $("r_pass2").value = "";
+  await enterApp(); alert("Your passphrase has been changed. Your recovery code still works.");
+});
+
+// Profile
+function renderProfile() {
+  const v = $("profileView"); v.innerHTML = "";
+  FIELDS.forEach(([k, l]) => {
+    if (!profile[k]) return;
+    const d = document.createElement("div"), s = document.createElement("span");
+    s.textContent = l; d.append(s, profile[k]); v.appendChild(d);
+  });
+  if (!v.children.length) v.innerHTML = "<p class='src'>No profile details yet. Click Edit to add them.</p>";
+}
+$("editProfile").onclick = () => {
+  fillFields("p_", profile);
+  const hidden = $("profileEdit").classList.toggle("hidden");
+  $("profileView").classList.toggle("hidden", !hidden);
+  $("editProfile").textContent = hidden ? "Edit" : "Cancel";
+};
+$("saveProfile").onclick = () => busy($("saveProfile"), "Saving...", async () => {
+  profile = readFields("p_"); await saveBlob("profile", profile); renderProfile();
+  $("profileEdit").classList.add("hidden"); $("profileView").classList.remove("hidden"); $("editProfile").textContent = "Edit";
+});
+
+// Records
+$("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
   const files = [...$("file").files]; if (!files.length) return alert("Choose a file first.");
   for (const f of files) {
     const id = crypto.randomUUID(), chunks = Math.ceil(f.size / CHUNK) || 1;
     for (let n = 0; n < chunks; n++) {
       $("status").textContent = `Encrypting ${f.name}: ${Math.round(n / chunks * 100)}%`;
       const part = await f.slice(n * CHUNK, (n + 1) * CHUNK).arrayBuffer();
-      const r = await api(`file/${id}/${n}`, { method: "PUT", body: await seal(part) });
+      const r = await api(`file/${id}/${n}`, { method: "PUT", body: await seal(masterKey, part) });
       if (!r.ok) { $("status").textContent = "Upload failed."; return; }
     }
     index.push({ id, name: f.name, type: f.type, size: f.size, chunks,
       doctor: $("doctor").value.trim(), date: $("date").value,
       tags: $("tags").value.split(",").map(t => t.trim()).filter(Boolean),
       notes: $("notes").value.trim(), source: "Uploaded by patient", added: new Date().toISOString() });
-    await saveIndex();
+    await saveBlob("index", index);
   }
   $("status").textContent = "Saved and encrypted."; $("file").value = ""; render();
-};
+});
 
 async function view(rec) {
   const parts = [];
   for (let n = 0; n < rec.chunks; n++) {
-    const r = await api(`file/${rec.id}/${n}`); parts.push(await open(new Uint8Array(await r.arrayBuffer())));
+    const r = await api(`file/${rec.id}/${n}`); parts.push(await open(masterKey, new Uint8Array(await r.arrayBuffer())));
   }
   const url = URL.createObjectURL(new Blob(parts, { type: rec.type || "application/octet-stream" }));
   if (/pdf|image/.test(rec.type)) window.open(url); else Object.assign(document.createElement("a"), { href: url, download: rec.name }).click();
@@ -107,7 +265,7 @@ async function view(rec) {
 async function remove(rec) {
   if (!confirm(`Delete ${rec.name}?`)) return;
   await api(`file/${rec.id}`, { method: "DELETE" });
-  index = index.filter(r => r.id !== rec.id); await saveIndex(); render();
+  index = index.filter(r => r.id !== rec.id); await saveBlob("index", index); render();
 }
 
 function render() {
