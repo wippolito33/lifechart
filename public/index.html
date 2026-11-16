@@ -123,6 +123,13 @@
   <div id="sumNote" class="note hidden">AI-generated from your records. It can make mistakes and is not medical advice. Check anything important with your doctor.</div>
   <div id="sumText" class="sum"></div>
  </div>
+ <div class="card" id="labCard">
+  <div class="row"><h2>Lab trends</h2><span class="src" id="labWhen"></span></div>
+  <p class="src" id="labIntro">Every lab test over time, from the lab reports you upload and from Apple Health. A test on the same date in both places is shown once.</p>
+  <button id="readLabs">Read my lab reports</button>
+  <div id="labStatus" class="src"></div>
+  <div id="labList"></div>
+ </div>
  <div class="card">
   <h2>Add a record</h2>
   <label for="file">Choose one or more files. You can pick more to add to the list.</label>
@@ -317,7 +324,7 @@ async function busy(btn, label, fn) {
   finally { btn.disabled = false; btn.textContent = t; }
 }
 async function enterApp() {
-  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); renderApple();
+  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); renderApple(); renderLabs();
   renderProfile(); render(); show("app");
 }
 
@@ -377,7 +384,7 @@ $("printCode").onclick = () => window.print();
 // Saving the record list marks sign-up as finished, so it happens only after the code is saved
 $("continue").onclick = () => busy($("continue"), "Finishing...", async () => {
   await saveBlob("index", index);
-  pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); show("app");
+  pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); renderSummary(); renderApple(); renderLabs(); show("app");
 });
 
 // Forgot passphrase
@@ -529,7 +536,7 @@ $("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
       doctor: item.doctor.trim(), date: item.date, tags, notes,
       source: "Uploaded by patient", added: new Date().toISOString() });
     await saveBlob("index", index);
-    pending.shift(); renderRows(); render();
+    pending.shift(); renderRows(); render(); renderLabs();
   }
   $("status").textContent = "Saved and encrypted."; $("tags").value = $("notes").value = ""; render();
 });
@@ -550,7 +557,7 @@ async function view(rec) {
 async function remove(rec) {
   if (!confirm(`Delete ${rec.name}?`)) return;
   await api(`file/${rec.id}`, { method: "DELETE" });
-  index = index.filter(r => r.id !== rec.id); await saveBlob("index", index); render();
+  index = index.filter(r => r.id !== rec.id); await saveBlob("index", index); render(); renderLabs();
 }
 
 // ---------- AI health summary ----------
@@ -639,7 +646,7 @@ const METRICS = {
   HKQuantityTypeIdentifierAppleExerciseTime: { key: "exercise", label: "Exercise minutes per day", kind: "daily", dp: 0, unit: "min" },
   HKCategoryTypeIdentifierSleepAnalysis: { key: "sleep", label: "Sleep per night", kind: "sleep", dp: 1, unit: "hours" }
 };
-const ORDER = ["restingHR", "heartRate", "hrv", "bpSys", "bpDia", "weight", "spo2", "glucose", "vo2", "steps", "exercise", "energy", "sleep"];
+const ORDER = ["restingHR", "heartRate", "hrv", "bp", "weight", "spo2", "glucose", "vo2", "steps", "exercise", "energy", "sleep"];
 const attr = (tag, name) => { const m = tag.match(new RegExp(" " + name + '="([^"]*)"')); return m ? m[1] : ""; };
 const loadScript = src => new Promise((ok, fail) => { const sc = document.createElement("script"); sc.src = src; sc.onload = ok; sc.onerror = () => fail(new Error("could not load the unzip tool")); document.head.appendChild(sc); });
 
@@ -725,6 +732,7 @@ function normalize(res) {
     return { kind: "Reports", date: day(res.effectiveDateTime || res.effectivePeriod?.start || res.issued), title: cc(res.code), value: (res.conclusion || "").slice(0, 400) };
   return null;
 }
+const AI_ORDER = ORDER.flatMap(k => k === "bp" ? ["bpSys", "bpDia"] : [k]);
 const KINDS = ["Labs", "Medications", "Conditions", "Allergies", "Immunizations", "Procedures", "Reports", "Vitals"];
 
 $("appleImport").onclick = () => busy($("appleImport"), "Importing...", async () => {
@@ -799,17 +807,18 @@ $("appleImport").onclick = () => busy($("appleImport"), "Importing...", async ()
     const i = data.clinical.map(c => c.kind).lastIndexOf(kind); data.clinical.splice(i, 1);
   }
   appleDaily = dailySeries(agg); await saveBlob("appleDaily", appleDaily);
-  apple = data; await saveBlob("apple", apple); renderApple();
+  apple = data; await saveBlob("apple", apple); renderApple(); renderLabs();
   status.textContent = `Imported ${records.toLocaleString()} measurements and ${clinical.length} records from your doctors.`;
   $("appleFile").value = "";
 });
 
-function spark(values) {
-  const v = values.filter(isFinite); if (v.length < 2) return "";
-  const lo = Math.min(...v), hi = Math.max(...v), w = 130, h = 30, pad = 3;
-  const pts = values.map((x, i) => `${(pad + i * (w - 2 * pad) / (values.length - 1)).toFixed(1)},${(h - pad - (hi === lo ? 0.5 : (x - lo) / (hi - lo)) * (h - 2 * pad)).toFixed(1)}`).join(" ");
-  const [lx, ly] = pts.split(" ").pop().split(",");
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="#1f6fb2" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${lx}" cy="${ly}" r="2.6" fill="#0b2e59"/></svg>`;
+function spark(values, values2) {
+  const all = [...values, ...(values2 || [])].filter(isFinite); if (values.filter(isFinite).length < 2) return "";
+  const lo = Math.min(...all), hi = Math.max(...all), w = 130, h = 30, pad = 3;
+  const line = vals => vals.map((x, i) => `${(pad + i * (w - 2 * pad) / (vals.length - 1)).toFixed(1)},${(h - pad - (hi === lo ? 0.5 : (x - lo) / (hi - lo)) * (h - 2 * pad)).toFixed(1)}`).join(" ");
+  const pts = line(values), [lx, ly] = pts.split(" ").pop().split(",");
+  const second = values2 && values2.length > 1 ? `<polyline points="${line(values2)}" fill="none" stroke="#7fb6e6" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>` : "";
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${second}<polyline points="${pts}" fill="none" stroke="#1f6fb2" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="${lx}" cy="${ly}" r="2.6" fill="#0b2e59"/></svg>`;
 }
 const monthName = m => new Date(m + "-15").toLocaleString(undefined, { month: "short", year: "numeric" });
 function renderApple() {
@@ -818,10 +827,12 @@ function renderApple() {
   $("appleImport").textContent = apple ? "Import a newer export" : "Import Apple Health data";
   $("appleHow").open = !apple;
   if (!apple) return;
-  const keys = ORDER.filter(k => apple.trends[k] && Object.keys(apple.trends[k]).length);
+  const has = k => apple.trends[k] && Object.keys(apple.trends[k]).length;
+  const keys = ORDER.filter(k => k === "bp" ? has("bpSys") && has("bpDia") : has(k));
   if (keys.length) {
     t.insertAdjacentHTML("beforeend", `<div class="sect">Health trends</div><div class="trend head"><span>Measure</span><span>Latest month</span><span class="avg">12-month average</span><span>Last 2 years</span></div>`);
     for (const k of keys) {
+      if (k === "bp") { t.appendChild(bpRow()); continue; }
       const m = Object.values(METRICS).find(x => x.key === k), months = Object.keys(apple.trends[k]).sort(), last = months.at(-1);
       const fmt = x => (+x).toLocaleString(undefined, { maximumFractionDigits: m.dp, minimumFractionDigits: m.dp });
       const unit = (apple.units[k] || m.unit || "").replace("count/min", "bpm");
@@ -854,7 +865,7 @@ function renderApple() {
         const d = document.createElement("span"); d.className = "d"; d.textContent = i.date || "";
         r.append(left, d);
         if ((kind === "Labs" || kind === "Vitals") && isFinite(parseFloat(i.value))) {
-          r.classList.add("click"); r.title = "See all results"; r.onclick = () => openLab(i.title);
+          r.classList.add("click"); r.title = "See all results"; r.onclick = () => kind === "Labs" ? openLabSeries(labKey(i.title).key) : openLab(i.title);
           d.insertAdjacentHTML("beforeend", ` <span class="chev">›</span>`);
         }
         det.appendChild(r);
@@ -863,6 +874,56 @@ function renderApple() {
     }
   }
 }
+// ---------- blood pressure: systolic and diastolic together ----------
+function bpRow() {
+  const S = apple.trends.bpSys, D = apple.trends.bpDia, months = Object.keys(S).filter(m => D[m] != null).sort(), last = months.at(-1);
+  const r0 = Math.round, yr = months.slice(-12), avgS = yr.reduce((a, m) => a + S[m], 0) / yr.length, avgD = yr.reduce((a, m) => a + D[m], 0) / yr.length;
+  const row = document.createElement("div"); row.className = "trend click"; row.tabIndex = 0; row.title = "See full history";
+  row.innerHTML = `<span><span>Blood pressure</span><span class="chev">›</span></span><span><b>${r0(S[last])}/${r0(D[last])}</b> mmHg<br><span class="src">${monthName(last)}</span></span><span class="avg">${r0(avgS)}/${r0(avgD)} mmHg</span>${spark(months.slice(-24).map(m => S[m]), months.slice(-24).map(m => D[m]))}`;
+  row.onclick = openBP; row.onkeydown = e => { if (e.key === "Enter") openBP(); };
+  return row;
+}
+function openBP() {
+  const body = openPanel("Blood pressure"), S = appleDaily?.bpSys, D = appleDaily?.bpDia, r0 = Math.round;
+  const bp = g => `${r0(g.v)}/${r0(g.v2)}`;
+  if (!S || !D) { // older import without daily history
+    const ms = Object.keys(apple.trends.bpSys).filter(m => apple.trends.bpDia[m] != null).sort();
+    const groups = ms.map(m => ({ label: monYY(dUTC(m + "-01")), long: monthName(m), v: apple.trends.bpSys[m], v2: apple.trends.bpDia[m] }));
+    body.innerHTML = `<div class="note">Import your Apple Health export again to see day-by-day history. Showing monthly averages for now.</div><div id="pChart"></div><div class="hist" id="pHist"></div>`;
+    drawChart($("pChart"), groups, { pair: true }, () => {});
+    $("pHist").innerHTML = groups.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${bp(g)} mmHg</span></div>`).join("");
+    return;
+  }
+  const endT = Math.max(dUTC(S.start) + (S.v.length - 1) * DAY, dUTC(D.start) + (D.v.length - 1) * DAY);
+  body.innerHTML = `<div class="seg">${RANGES.map(([r, l]) => `<button data-r="${r}" title="${l}">${r}</button>`).join("")}</div>
+    <div class="readout"><div class="lab" id="pLab"></div><div class="big" id="pBig"></div><div class="when" id="pWhen"></div></div>
+    <div id="pChart"></div><div class="src" id="pHint"></div><div class="hist" id="pHist"></div>`;
+  const show = range => {
+    body.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.r === range));
+    const gs = buckets(S, range, endT), gd = buckets(D, range, endT);
+    const groups = gs.map((g, i) => ({ ...g, v: g.v != null && gd[i].v != null ? g.v : null, v2: gd[i].v, lo: null, hi: null, n2: gd[i].n }));
+    const have = groups.filter(g => g.v != null), days = range === "W" || range === "M";
+    const wavg = (k, n) => have.reduce((a, g) => a + g[k] * g[n], 0) / have.reduce((a, g) => a + g[n], 0);
+    const span = have.length ? `${groups[0].long.replace("Week of ", "")} – ${groups.at(-1).long.replace("Week of ", "")}` : "";
+    const setRead = g => {
+      if (!g) {
+        $("pLab").textContent = "Average";
+        $("pBig").innerHTML = have.length ? `${r0(wavg("v", "n"))}/${r0(wavg("v2", "n2"))} <small>mmHg</small>` : "No data";
+        $("pWhen").textContent = span;
+      } else {
+        $("pLab").textContent = days ? "Reading" : "Average";
+        $("pBig").innerHTML = `${bp(g)} <small>mmHg</small>`; $("pWhen").textContent = g.long;
+      }
+    };
+    setRead(null);
+    drawChart($("pChart"), groups, { pair: true }, setRead);
+    $("pHint").textContent = "Top dot = systolic, bottom dot = diastolic. Point at or tap the chart to see a single " + (range === "6M" ? "week" : days ? "day" : "month") + ".";
+    $("pHist").innerHTML = have.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${bp(g)} mmHg</span></div>`).join("") || `<p class="src">No readings in this period.</p>`;
+  };
+  body.querySelectorAll(".seg button").forEach(b => b.onclick = () => show(b.dataset.r));
+  show("6M");
+}
+
 // ---------- history detail (like Apple Health's charts) ----------
 const RANGES = [["W", "Week"], ["M", "Month"], ["6M", "6 months"], ["Y", "Year"], ["All", "All time"]];
 const fmtD = (t, o) => new Date(t).toLocaleDateString(undefined, { timeZone: "UTC", ...o });
@@ -887,8 +948,8 @@ function closePanel() { $("overlay")?.remove(); document.body.style.overflow = "
 document.addEventListener("keydown", e => { if (e.key === "Escape") closePanel(); });
 
 // Groups daily values into the bars/points for a range
-function buckets(sr, range) {
-  const t0 = dUTC(sr.start), lastI = sr.v.length - 1, end = t0 + lastI * DAY;
+function buckets(sr, range, endT) {
+  const t0 = dUTC(sr.start), lastI = sr.v.length - 1, end = endT ?? t0 + lastI * DAY;
   const groups = [];
   const add = (from, to, label, long) => { // day indexes, inclusive
     const vals = [], los = [], his = [];
@@ -916,7 +977,7 @@ function buckets(sr, range) {
 // Draws bars (totals like steps) or points with low-high ranges (readings like heart rate)
 function drawChart(box, groups, opt, onPick) {
   const W = Math.max(300, box.clientWidth || 600), H = 230, L = 8, R = 44, T = 10, B = 26;
-  const vals = groups.flatMap(g => [g.v, opt.bars ? null : g.lo, opt.bars ? null : g.hi]).filter(x => x != null);
+  const vals = groups.flatMap(g => [g.v, g.v2, opt.bars ? null : g.lo, opt.bars ? null : g.hi]).filter(x => x != null);
   if (opt.band) vals.push(...opt.band.filter(x => x != null));
   if (!vals.length) { box.innerHTML = `<p class="src">No data in this period.</p>`; return; }
   let lo = Math.min(...vals), hi = Math.max(...vals);
@@ -930,6 +991,10 @@ function drawChart(box, groups, opt, onPick) {
   groups.forEach((g, i) => { if (i % every === 0 || n <= 12) { const x = xc(i), anchor = x < 24 ? "start" : x > W - R - 24 ? "end" : "middle";
     svg += `<text x="${anchor === "start" ? Math.max(2, x - 6) : x}" y="${H - 8}" text-anchor="${anchor}">${esc(g.label)}</text>`; } });
   if (opt.bars) groups.forEach((g, i) => { if (g.v != null) { const bw = Math.max(2, Math.min(28, cw * 0.62)); svg += `<rect class="mk" data-i="${i}" x="${xc(i) - bw / 2}" y="${y(g.v)}" width="${bw}" height="${Math.max(1, y(lo) - y(g.v))}" rx="${Math.min(4, bw / 3)}" fill="#2a86d1"/>`; } });
+  else if (opt.pair) groups.forEach((g, i) => { if (g.v == null || g.v2 == null) return;
+    const r = n > 60 ? 2.5 : 4;
+    svg += `<line x1="${xc(i)}" x2="${xc(i)}" y1="${y(g.v)}" y2="${y(g.v2)}" stroke="#9cc5ea" stroke-width="${Math.max(2, Math.min(6, cw * 0.3))}" stroke-linecap="round"/>`;
+    svg += `<circle class="mk" data-i="${i}" cx="${xc(i)}" cy="${y(g.v)}" r="${r}" fill="#0b2e59"/><circle class="mk" data-i="${i}" cx="${xc(i)}" cy="${y(g.v2)}" r="${r}" fill="#2a86d1"/>`; });
   else {
     const pts = groups.map((g, i) => g.v == null ? null : [xc(i), y(g.v)]);
     let path = "", pen = false; for (const p of pts) { if (!p) { pen = false; continue; } path += (pen ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1); pen = true; }
@@ -1015,11 +1080,149 @@ function openLab(title) {
   $("pHist").innerHTML = groups.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${esc(String(g.raw.value))}${g.flag ? ` <span class="flag">${/^L/.test(g.flag) ? "LOW" : /^H/.test(g.flag) ? "HIGH" : "!"}</span>` : ""}</span></div>`).join("");
 }
 
+// ---------- Lab trends: uploaded lab reports + Apple Health labs, merged ----------
+// Same test under different names (e.g. "ALT (SGPT)" and "Alanine aminotransferase") is grouped together.
+const LAB_RULES = [
+  [/^(hemoglobin a1c|hba1c|a1c|glycated hemoglobin|glycohemoglobin)\b/, "a1c", "Hemoglobin A1c", "Diabetes"],
+  [/^(glucose|fasting glucose|glucose fasting)\b/, "glucose", "Glucose", "Metabolic panel"],
+  [/^(bun creatinine ratio|bun creat ratio)/, "bunratio", "BUN/creatinine ratio", "Metabolic panel"],
+  [/^(bun|urea nitrogen|blood urea nitrogen)\b/, "bun", "BUN (urea nitrogen)", "Metabolic panel"],
+  [/^creatinine\b(?! kinase)/, "creatinine", "Creatinine", "Metabolic panel"],
+  [/(^|\s)e?gfr\b|glomerular filtration/, "egfr", "eGFR (kidney function)", "Metabolic panel"],
+  [/^(sodium|na)$/, "sodium", "Sodium", "Metabolic panel"],
+  [/^(potassium|k)$/, "potassium", "Potassium", "Metabolic panel"],
+  [/^(chloride|cl)$/, "chloride", "Chloride", "Metabolic panel"],
+  [/^(carbon dioxide|co2|bicarbonate|hco3)\b/, "co2", "Carbon dioxide (CO2)", "Metabolic panel"],
+  [/^(calcium|ca)$/, "calcium", "Calcium", "Metabolic panel"],
+  [/^(albumin globulin ratio|a g ratio|ag ratio)/, "agratio", "Albumin/globulin ratio", "Metabolic panel"],
+  [/^protein$/, "protein", "Total protein", "Metabolic panel"],
+  [/^albumin$/, "albumin", "Albumin", "Metabolic panel"],
+  [/^globulin$/, "globulin", "Globulin", "Metabolic panel"],
+  [/^bilirubin$/, "bilirubin", "Bilirubin", "Metabolic panel"],
+  [/^(alkaline phosphatase|alk phos|alp)\b/, "alp", "Alkaline phosphatase", "Metabolic panel"],
+  [/^(ast|sgot|aspartate aminotransferase)\b/, "ast", "AST (SGOT)", "Metabolic panel"],
+  [/^(alt|sgpt|alanine aminotransferase)\b/, "alt", "ALT (SGPT)", "Metabolic panel"],
+  [/^(cholesterol hdl ratio|chol hdl ratio|hdl ratio)/, "cholratio", "Cholesterol/HDL ratio", "Lipid panel"],
+  [/^(non hdl|nonhdl)/, "nonhdl", "Non-HDL cholesterol", "Lipid panel"],
+  [/^(ldl|cholesterol ldl|ldl cholesterol)/, "ldl", "LDL cholesterol", "Lipid panel"],
+  [/^(hdl|cholesterol hdl|hdl cholesterol)/, "hdl", "HDL cholesterol", "Lipid panel"],
+  [/^(vldl)/, "vldl", "VLDL cholesterol", "Lipid panel"],
+  [/^(cholesterol|chol)$/, "chol", "Total cholesterol", "Lipid panel"],
+  [/^triglycerides?\b/, "trig", "Triglycerides", "Lipid panel"],
+  [/^(wbc|white blood cells?|leukocytes)\b/, "wbc", "White blood cells", "Blood count"],
+  [/^(rbc|red blood cells?|erythrocytes)\b/, "rbc", "Red blood cells", "Blood count"],
+  [/^(hemoglobin|hgb|hb)$/, "hgb", "Hemoglobin", "Blood count"],
+  [/^(hematocrit|hct)\b/, "hct", "Hematocrit", "Blood count"],
+  [/^(platelets?|plt)\b/, "plt", "Platelets", "Blood count"],
+  [/^mcv\b/, "mcv", "MCV", "Blood count"], [/^mchc\b/, "mchc", "MCHC", "Blood count"], [/^mch\b/, "mch", "MCH", "Blood count"], [/^rdw\b/, "rdw", "RDW", "Blood count"],
+  [/^(tsh|thyroid stimulating hormone)\b/, "tsh", "TSH (thyroid)", "Other"],
+  [/vitamin d/, "vitd", "Vitamin D", "Other"],
+  [/^(psa|prostate specific antigen)\b/, "psa", "PSA", "Other"]
+];
+const PANELS = ["Metabolic panel", "Lipid panel", "Diabetes", "Blood count", "Other"];
+function labKey(name) {
+  const n = String(name).toLowerCase().replace(/\([^)]*\)/g, " ").replace(/[^a-z0-9]+/g, " ")
+    .replace(/\b(serum|plasma|blood|level|total|ser|wb|venous|calc|calculated|auto|automated|count|test|result)\b/g, " ").replace(/\s+/g, " ").trim();
+  for (const [re, key, label, panel] of LAB_RULES) if (re.test(n)) return { key, label, panel };
+  return { key: "x:" + n, label: String(name).trim(), panel: "Other" };
+}
+function parseRange(t) {
+  const nums = (t || "").match(/-?\d+(\.\d+)?/g)?.map(Number) || [];
+  if (/≤|</.test(t)) return [null, nums[0] ?? null];
+  if (/≥|>/.test(t)) return [nums[0] ?? null, null];
+  return nums.length >= 2 ? [nums[0], nums[1]] : [null, null];
+}
+const isLabRecord = r => r.category === "Labs" || (!r.category && /lab|panel|cmp|bmp|cbc|lipid|metabolic|a1c/i.test(r.name));
+function buildLabSeries() {
+  const series = new Map();
+  const add = (test, date, value, unit, low, high, flag, source) => {
+    if (!date || !isFinite(value)) return;
+    const k = labKey(test), s = series.get(k.key) || { ...k, items: [] }; series.set(k.key, s);
+    if (!flag && low != null && value < low) flag = "L"; if (!flag && high != null && value > high) flag = "H";
+    // the same test on the same date with the same value (within 1%) is one result, listed with both sources
+    const dup = s.items.find(i => i.date === date && Math.abs(i.value - value) <= Math.max(Math.abs(value), 1) * 0.01);
+    if (dup) { if (!dup.sources.includes(source)) dup.sources.push(source); dup.low ??= low; dup.high ??= high; dup.unit ||= unit; return; }
+    s.items.push({ date, value, unit: unit || "", low, high, flag: flag || "", sources: [source] });
+  };
+  for (const r of index) for (const l of r.labs || []) add(l.test, l.date || r.date, l.value, l.unit, l.low, l.high, l.flag, r.name);
+  for (const i of (apple?.clinical || []).filter(i => i.kind === "Labs")) {
+    const v = parseFloat(i.value); if (!isFinite(v)) continue;
+    const [lo, hi] = parseRange(i.range);
+    add(i.title, i.date, v, String(i.value).replace(/^[-\d.,\s]+/, ""), lo, hi, /^H/.test(i.flag) ? "H" : /^L/.test(i.flag) ? "L" : "", "Apple Health");
+  }
+  for (const s of series.values()) s.items.sort((a, b) => a.date.localeCompare(b.date));
+  return series;
+}
+const labFmt = v => (+v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const flagWord = f => /^L/.test(f) ? "LOW" : /^H/.test(f) ? "HIGH" : "";
+function renderLabs() {
+  const box = $("labList"); box.innerHTML = "";
+  const series = [...buildLabSeries().values()];
+  const unread = index.filter(r => isLabRecord(r) && !Array.isArray(r.labs) && canSummarize(r)).length;
+  $("readLabs").classList.toggle("hidden", !unread);
+  $("readLabs").textContent = unread ? `Read my lab reports (${unread} new)` : "Read my lab reports";
+  $("labIntro").classList.toggle("hidden", series.length > 0);
+  $("labWhen").textContent = series.length ? `${series.length} tests` : "";
+  if (!series.length) { if (!unread) box.innerHTML = `<p class="src">Upload lab reports with the record type "Labs", or import Apple Health, to see your lab trends.</p>`; return; }
+  for (const panel of PANELS) {
+    const list = series.filter(s => s.panel === panel).sort((a, b) => LAB_RULES.findIndex(r => r[1] === a.key) - LAB_RULES.findIndex(r => r[1] === b.key) || a.label.localeCompare(b.label));
+    if (!list.length) continue;
+    box.insertAdjacentHTML("beforeend", `<div class="sect">${panel}</div><div class="trend head"><span>Test</span><span>Latest</span><span class="avg">Normal range</span><span>History</span></div>`);
+    for (const s of list) {
+      const last = s.items.at(-1), row = document.createElement("div"); row.className = "trend click"; row.tabIndex = 0; row.title = "See all results";
+      const rng = last.low != null && last.high != null ? `${labFmt(last.low)}–${labFmt(last.high)}` : last.high != null ? `under ${labFmt(last.high)}` : last.low != null ? `over ${labFmt(last.low)}` : "—";
+      row.innerHTML = `<span><span></span><span class="chev">›</span><br><span class="src"></span></span><span><b>${labFmt(last.value)}</b> ${esc(last.unit)}${last.flag ? ` <span class="flag">${flagWord(last.flag)}</span>` : ""}<br><span class="src">${esc(fmtD(dUTC(last.date), { month: "short", day: "numeric", year: "numeric" }))}</span></span><span class="avg">${esc(rng)}</span>${spark(s.items.slice(-24).map(i => i.value)) || `<span class="src">1 result</span>`}`;
+      row.querySelector("span span").textContent = s.label;
+      row.querySelector("span .src").textContent = `${s.items.length} result${s.items.length === 1 ? "" : "s"}`;
+      row.onclick = () => openLabSeries(s.key); row.onkeydown = e => { if (e.key === "Enter") openLabSeries(s.key); };
+      box.appendChild(row);
+    }
+  }
+}
+function openLabSeries(key) {
+  const s = buildLabSeries().get(key); if (!s) return;
+  const items = s.items, last = items.at(-1), body = openPanel(s.label);
+  const band = last.low != null || last.high != null ? [last.low, last.high] : null;
+  const groups = items.map(i => ({ label: monYY(dUTC(i.date)), long: fmtD(dUTC(i.date), { month: "short", day: "numeric", year: "numeric" }), v: i.value, flag: i.flag, raw: i }));
+  const rngText = band ? (band[0] != null && band[1] != null ? `${labFmt(band[0])}–${labFmt(band[1])}` : band[1] != null ? `under ${labFmt(band[1])}` : `over ${labFmt(band[0])}`) + " " + last.unit : "";
+  body.innerHTML = `<div class="readout"><div class="lab" id="pLab"></div><div class="big" id="pBig"></div><div class="when" id="pWhen"></div></div><div id="pChart"></div>
+    <div class="src">${band ? `Green band = normal range (${esc(rngText.trim())}). ` : ""}Red dots are outside the normal range. Point at or tap a result for details.</div><div class="hist" id="pHist"></div>`;
+  const setRead = g => {
+    g = g || groups.at(-1);
+    $("pLab").textContent = g === groups.at(-1) ? "Latest result" : "Result";
+    $("pBig").innerHTML = `${labFmt(g.v)} <small>${esc(g.raw.unit)}</small>${g.flag ? ` <span class="flag" style="font-size:15px">${flagWord(g.flag)}</span>` : ""}`;
+    $("pWhen").textContent = `${g.long} · from ${g.raw.sources.join(" and ")}`;
+  };
+  setRead(null);
+  drawChart($("pChart"), groups, { bars: false, band }, setRead);
+  $("pHist").innerHTML = groups.slice().reverse().map(g => `<div><span>${esc(g.long)}<br><span class="src">${esc(g.raw.sources.join(" + "))}</span></span><span>${labFmt(g.v)} ${esc(g.raw.unit)}${g.flag ? ` <span class="flag">${flagWord(g.flag)}</span>` : ""}</span></div>`).join("");
+}
+$("readLabs").onclick = () => busy($("readLabs"), "Reading...", async () => {
+  if (!(await mustBeCurrent())) return;
+  const todo = index.filter(r => isLabRecord(r) && !Array.isArray(r.labs) && canSummarize(r));
+  if (!todo.length) return alert("There are no new lab reports to read. Upload lab reports with the record type \"Labs\".");
+  if (!confirm(`To pull the numbers out of ${todo.length} lab report${todo.length === 1 ? "" : "s"}, each one will be unlocked on this device and sent to an AI service (Anthropic's Claude) to be read. They are not stored there by LifeChart. The results are saved encrypted with your records.\n\nContinue?`)) return;
+  let done = 0; const failed = [];
+  for (const rec of todo) {
+    $("labStatus").textContent = `Reading ${rec.name} (${++done} of ${todo.length})...`;
+    try {
+      const blob = await fileBlob(rec), body = { mode: "labs", name: rec.name, mime: rec.type };
+      if (rec.type === "application/pdf" || AI_IMAGE.includes(rec.type)) body.data = toB64(new Uint8Array(await blob.arrayBuffer())); else body.text = await blob.text();
+      const r = await api("summarize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(await r.text() || "no response");
+      rec.labs = (await r.json()).labs || []; rec.labsAt = new Date().toISOString();
+      await saveBlob("index", index); renderLabs();
+    } catch (e) { failed.push(`${rec.name} (${e.message})`); }
+  }
+  const found = todo.reduce((n, r) => n + (r.labs?.length || 0), 0);
+  $("labStatus").textContent = `Found ${found} lab result${found === 1 ? "" : "s"}.` + (failed.length ? ` Couldn't read: ${failed.join("; ")}.` : "");
+}).then(renderLabs);
+
 // A compact text version of the Apple data for the AI summary
 function appleForAI() {
   if (!apple) return "";
   let out = "MONTHLY TRENDS (last 24 months)\n";
-  for (const k of ORDER) {
+  for (const k of AI_ORDER) {
     const tr = apple.trends[k]; if (!tr) continue;
     const m = Object.values(METRICS).find(x => x.key === k);
     out += `${m.label} (${apple.units[k] || ""}): ` + Object.keys(tr).sort().slice(-24).map(mo => `${mo} ${(+tr[mo]).toFixed(m.dp)}`).join("; ") + "\n";

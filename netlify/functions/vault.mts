@@ -74,6 +74,11 @@ Below are the patient's profile, short summaries of each record in their file, a
 ## Questions to discuss with your doctor
 Base everything only on the information given and name the source file for key facts. If records disagree or something is unclear, say so. Do not diagnose or give treatment advice. Write in plain language.`;
 
+const LABS_PROMPT = `Extract every numeric laboratory test result from the attached document.
+Return ONLY a JSON array (no other text). One object per result:
+{"test": "name as printed", "value": number, "unit": "unit as printed or empty", "low": number or null, "high": number or null, "flag": "H", "L" or "", "date": "YYYY-MM-DD" (specimen collection date; null if not shown)}
+Rules: use the reference range printed next to the result for low/high (for "<100" use low null, high 100; for ">59" use low 59, high null). For a value printed as "<0.2" use 0.2. Skip results that are not numbers (such as "Negative" or "See note"), comments, and anything that is not a lab test. If there are no lab results, return [].`;
+
 async function callClaude(content: any[], maxTokens: number) {
   const key = env("ANTHROPIC_API_KEY");
   if (!key) throw new Error("The AI key is not set up on the server yet.");
@@ -91,6 +96,24 @@ async function summarize(req: Request) {
   const b: any = await req.json().catch(() => null);
   if (!b) return bad("Bad request");
   try {
+    if (b.mode === "labs") {
+      let block: any;
+      if (b.mime === "application/pdf") block = { type: "document", source: { type: "base64", media_type: "application/pdf", data: b.data } };
+      else if (IMAGE_TYPES.includes(b.mime)) block = { type: "image", source: { type: "base64", media_type: b.mime, data: b.data } };
+      else if (typeof b.text === "string") block = { type: "text", text: "Document text:\n" + b.text.slice(0, 200000) };
+      else return bad("This file type can't be read.");
+      const text = await callClaude([block, { type: "text", text: LABS_PROMPT }], 6000);
+      const start = text.indexOf("["), end = text.lastIndexOf("]");
+      let labs: any[] = [];
+      try { labs = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : []; } catch { return bad("The lab values couldn't be read from this file.", 502); }
+      const num = (x: any) => (typeof x === "number" && isFinite(x) ? x : typeof x === "string" && isFinite(parseFloat(x)) ? parseFloat(x) : null);
+      labs = (Array.isArray(labs) ? labs : []).map((l: any) => ({
+        test: String(l?.test || "").slice(0, 120), value: num(l?.value), unit: String(l?.unit || "").slice(0, 30),
+        low: num(l?.low), high: num(l?.high), flag: /^[HL]/i.test(l?.flag || "") ? String(l.flag)[0].toUpperCase() : "",
+        date: /^\d{4}-\d\d-\d\d$/.test(l?.date || "") ? l.date : null,
+      })).filter((l: any) => l.test && l.value !== null);
+      return Response.json({ labs });
+    }
     if (b.mode === "record") {
       const meta = `File: ${b.name || "record"}\nRecord type: ${b.category || "unknown"}\nDoctor or facility (entered by patient): ${b.doctor || "not given"}\nDate (entered by patient): ${b.date || "not given"}`;
       let block: any;
