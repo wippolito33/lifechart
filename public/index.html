@@ -47,10 +47,15 @@
  .cli .d{color:#5b7493;font-size:12px;white-space:nowrap} .flag{color:#c62828;font-weight:700}
  progress{width:100%;height:10px;margin:6px 0}
  @media(max-width:600px){.trend{grid-template-columns:1.2fr 1fr 90px}.trend .avg{display:none}.trend svg{width:90px}}
+ .avatar{border-radius:50%;object-fit:cover;background:linear-gradient(135deg,#0b2e59,#5aa9e6);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;overflow:hidden}
+ .avatar img{width:100%;height:100%;object-fit:cover}
+ .hdr-right{display:flex;align-items:center;gap:10px}
+ .who{display:flex;align-items:center;gap:16px;padding:6px 0 10px!important} .pf .who div{border:0;padding:0} .who .nm{font-size:20px;font-weight:700} .who .em{font-size:13px;color:#5b7493}
+ .photo-pick{display:flex;align-items:center;gap:14px;margin:6px 0} .photo-pick .btns{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
  .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
  @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
-<header><div class="brand"><svg width="38" height="38" viewBox="0 0 48 48" aria-label="LifeChart logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b2e59"/><stop offset="1" stop-color="#5aa9e6"/></linearGradient></defs><rect width="48" height="48" rx="12" fill="url(#lg)"/><path d="M6 26h9l4-9 6 17 5-12 3 4h9" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg><div><span>Life<b>Chart</b></span><small>Your health records for life, for you and your doctor</small></div></div><button id="logout" class="hidden">Lock</button></header>
+<header><div class="brand"><svg width="38" height="38" viewBox="0 0 48 48" aria-label="LifeChart logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b2e59"/><stop offset="1" stop-color="#5aa9e6"/></linearGradient></defs><rect width="48" height="48" rx="12" fill="url(#lg)"/><path d="M6 26h9l4-9 6 17 5-12 3 4h9" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg><div><span>Life<b>Chart</b></span><small>Your health records for life, for you and your doctor</small></div></div><div class="hdr-right"><span id="hdrAvatar" class="avatar hidden" style="width:36px;height:36px;font-size:14px" title="Your profile"></span><button id="logout" class="hidden">Lock</button></div></header>
 <main>
 
 <div id="login" class="card screen">
@@ -195,7 +200,7 @@ async function loadBlob(name, fallback) {
 
 function show(id) {
   document.querySelectorAll(".screen").forEach(e => e.classList.toggle("hidden", e.id !== id));
-  $("logout").classList.toggle("hidden", id !== "app");
+  $("logout").classList.toggle("hidden", id !== "app"); $("hdrAvatar").classList.toggle("hidden", id !== "app");
 }
 const box = (p, k, l, t) => {
   const id = p + k, lab = `<label for="${id}">${l}</label>`;
@@ -227,7 +232,9 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("change", e => { if (e.target.type === "tel") e.target.value = formatPhone(e.target.value); });
 function fieldsHTML(p) {
-  let h = "";
+  let h = `<div class="sect">Profile picture</div><div class="photo-pick"><span id="${p}photoPrev" class="avatar" style="width:72px;height:72px;font-size:26px"></span>
+    <div class="btns"><label class="ghost" style="padding:8px 12px;border-radius:6px;border:1px solid #c9dcf2;color:#1f6fb2;cursor:pointer;font-size:15px">Choose photo<input type="file" accept="image/*" id="${p}photoFile" class="hidden"></label>
+    <button type="button" class="link hidden" id="${p}photoRemove">Remove photo</button><span class="src">Square photos look best. It's shrunk and encrypted.</span></div></div>`;
   for (const [title, f, pre, unitLabel] of SECTIONS) {
     h += `<div class="sect">${title}</div>`;
     if (f === "addr") {
@@ -246,10 +253,43 @@ function addMedRow(p, m = {}) {
   row.querySelector("button").onclick = () => row.remove();
   $(p + "meds").appendChild(row);
 }
-for (const p of ["s_", "p_"]) { $(p + "fields").innerHTML = fieldsHTML(p); $(p + "addMed").onclick = () => addMedRow(p); }
+// ---------- profile picture ----------
+const photos = { s_: "", p_: "" }; // the photo chosen in each form, as a small JPEG data URL
+const initials = o => ((o.fullName || o.email || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
+function setAvatar(el, photo, o) {
+  el.innerHTML = "";
+  if (photo) { const img = document.createElement("img"); img.src = photo; img.alt = "Profile picture"; el.appendChild(img); }
+  else el.textContent = initials(o);
+}
+// Crops the picture to a centered square and shrinks it to 256 x 256
+async function shrinkPhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => fail(new Error("That picture couldn't be opened. Try a JPG or PNG.")); i.src = url; });
+    const side = Math.min(img.naturalWidth, img.naturalHeight), c = document.createElement("canvas"); c.width = c.height = 256;
+    c.getContext("2d").drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 256, 256);
+    return c.toDataURL("image/jpeg", 0.85);
+  } finally { URL.revokeObjectURL(url); }
+}
+function showPhotoPick(p) {
+  const name = $(p + "fullName").value.trim();
+  setAvatar($(p + "photoPrev"), photos[p], { fullName: name, email: p === "s_" ? $("s_user").value : profile.email });
+  $(p + "photoRemove").classList.toggle("hidden", !photos[p]);
+}
+for (const p of ["s_", "p_"]) {
+  $(p + "fields").innerHTML = fieldsHTML(p); $(p + "addMed").onclick = () => addMedRow(p);
+  $(p + "photoFile").onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    try { photos[p] = await shrinkPhoto(f); showPhotoPick(p); } catch (err) { alert(err.message); }
+  };
+  $(p + "photoRemove").onclick = () => { photos[p] = ""; showPhotoPick(p); };
+  $(p + "fullName").addEventListener("input", () => showPhotoPick(p));
+}
+showPhotoPick("s_");
+$("hdrAvatar").onclick = () => $("profileView").scrollIntoView({ behavior: "smooth", block: "center" });
 const readMeds = p => [...$(p + "meds").children].map(r => { const [n, d, f] = r.querySelectorAll("input"); return { name: n.value.trim(), dose: d.value.trim(), freq: f.value.trim() }; }).filter(m => m.name);
-const readFields = p => ({ ...Object.fromEntries(FIELDS.map(([k]) => [k, isTel(k) ? formatPhone($(p + k).value) : $(p + k).value.trim()])), meds: readMeds(p) });
-const fillFields = (p, o) => { FIELDS.forEach(([k]) => { $(p + k).value = isTel(k) ? formatPhone(o[k]) : (o[k] || ""); }); $(p + "meds").innerHTML = ""; (o.meds || []).forEach(m => addMedRow(p, m)); if (!(o.meds || []).length) addMedRow(p); };
+const readFields = p => ({ ...Object.fromEntries(FIELDS.map(([k]) => [k, isTel(k) ? formatPhone($(p + k).value) : $(p + k).value.trim()])), meds: readMeds(p), photo: photos[p] });
+const fillFields = (p, o) => { FIELDS.forEach(([k]) => { $(p + k).value = isTel(k) ? formatPhone(o[k]) : (o[k] || ""); }); $(p + "meds").innerHTML = ""; (o.meds || []).forEach(m => addMedRow(p, m)); if (!(o.meds || []).length) addMedRow(p); photos[p] = o.photo || ""; showPhotoPick(p); };
 addMedRow("s_");
 const exists = async vid => (await (await fetch("/api/exists", { headers: { "x-vault": vid } })).text()) === "yes";
 
@@ -354,6 +394,12 @@ function fmtAddr(o, pre) {
 }
 function renderProfile() {
   const v = $("profileView"); v.innerHTML = "";
+  setAvatar($("hdrAvatar"), profile.photo, profile);
+  const who = document.createElement("div"); who.className = "who";
+  const av = document.createElement("span"); av.className = "avatar"; av.style.cssText = "width:84px;height:84px;font-size:30px"; setAvatar(av, profile.photo, profile);
+  const txt = document.createElement("div"), nm = document.createElement("div"), em = document.createElement("div");
+  nm.className = "nm"; nm.textContent = profile.fullName || "Your name"; em.className = "em"; em.textContent = profile.email || "";
+  txt.append(nm, em); who.append(av, txt); v.appendChild(who);
   const line = (label, value) => {
     if (!value) return false;
     const d = document.createElement("div"), s = document.createElement("span");
@@ -517,7 +563,7 @@ $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
   const have = index.filter(r => r.ai);
   if (!have.length && !apple && !Object.values(profile).some(Boolean)) { $("sumStatus").textContent = ""; return alert("None of your records could be read. " + (failed[0] || "")); }
   $("sumStatus").textContent = "Writing your summary...";
-  const { email, ...prof } = profile;
+  const { email, photo, ...prof } = profile;
   const text = await postSummary({ mode: "overall", profile: prof, apple: appleForAI(),
     records: have.map(r => ({ name: r.name, category: r.category, doctor: r.doctor, date: r.date, summary: r.ai })) });
   summary = { text, at: new Date().toISOString(), count: have.length };
