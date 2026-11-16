@@ -7,8 +7,8 @@
  header{background:#fff;color:#0b2e59;border-bottom:3px solid #1f6fb2;padding:12px 20px;display:flex;justify-content:space-between;align-items:center}
  main{max-width:900px;margin:20px auto;padding:0 14px}
  .card{background:#fff;border-radius:14px;padding:18px;margin-bottom:16px;border:1px solid #dbe8f7;box-shadow:0 2px 10px #1f6fb21a}
- input,button{font:inherit;padding:9px;margin:4px 0;border-radius:6px;border:1px solid #c9dcf2}
- input{width:100%;box-sizing:border-box} button{background:linear-gradient(#2a86d1,#1f6fb2);color:#fff;cursor:pointer;border:0}
+ input,button,select,textarea{font:inherit;padding:9px;margin:4px 0;border-radius:6px;border:1px solid #c9dcf2}
+ input,select,textarea{width:100%;box-sizing:border-box;background:#fff;color:#0b2e59} textarea{min-height:64px;resize:vertical} button{background:linear-gradient(#2a86d1,#1f6fb2);color:#fff;cursor:pointer;border:0}
  button:disabled{opacity:.5;cursor:default}
  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px} h3{margin:18px 0 6px;color:#2e4a7d}
  .rec{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding:8px 0;gap:8px}
@@ -22,7 +22,15 @@
  .code{font-family:ui-monospace,monospace;font-size:22px;letter-spacing:2px;background:#e3f0fc;color:#0b2e59;padding:14px;border-radius:10px;text-align:center;margin:10px 0;word-break:break-all}
  .pf div{padding:5px 0;border-bottom:1px solid #f0f4fa} .pf span{display:inline-block;width:210px;color:#5b7493;font-size:13px}
  label{font-size:13px;color:#5b7493}
- @media(max-width:600px){.grid{grid-template-columns:1fr}.pf span{display:block;width:auto}}
+ .sect{margin:14px 0 2px;font-size:14px;font-weight:700;color:#1f6fb2;text-transform:uppercase;letter-spacing:.6px}
+ .wide{grid-column:1/-1}
+ .addr{display:grid;grid-template-columns:2fr 1fr;gap:8px} .csz{display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px}
+ .med{display:grid;grid-template-columns:2fr 1fr 1.4fr auto;gap:8px;align-items:center}
+ .med button.x{background:#fff;color:#c62828;border:1px solid #f1c6c6;padding:7px 11px}
+ .pf .sect{border:0;padding:12px 0 2px} .pf ul{margin:4px 0 0;padding-left:20px}
+ .cat{background:#0b2e59;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;margin-right:4px}
+ .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
+ @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
 <header><div class="brand"><svg width="38" height="38" viewBox="0 0 48 48" aria-label="LifeChart logo"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b2e59"/><stop offset="1" stop-color="#5aa9e6"/></linearGradient></defs><rect width="48" height="48" rx="12" fill="url(#lg)"/><path d="M6 26h9l4-9 6 17 5-12 3 4h9" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg><div><span>Life<b>Chart</b></span><small>Your health records for life, for you and your doctor</small></div></div><button id="logout" class="hidden">Lock</button></header>
 <main>
@@ -71,22 +79,34 @@
  <div class="card">
   <h2>Add a record</h2>
   <input id="file" type="file" multiple>
-  <div class="grid"><input id="doctor" placeholder="Doctor or facility"><input id="date" type="date"></div>
-  <input id="tags" placeholder="Tags, comma separated (labs, imaging, MRI)">
+  <div class="upgrid">
+   <div><label for="category">Record type</label><select id="category"><option value="">Choose a type</option></select></div>
+   <div><label for="doctor">Doctor or facility</label><input id="doctor" placeholder="Doctor or facility"></div>
+   <div><label for="date">Date of record</label><input id="date" type="date"></div>
+  </div>
+  <input id="tags" placeholder="Extra tags, comma separated (optional)">
   <input id="notes" placeholder="Notes (optional)">
   <button id="upload">Encrypt &amp; upload</button> <span id="status"></span>
  </div>
- <div class="card"><input id="search" placeholder="Search by name, doctor, tag or notes"><div id="list"></div></div>
+ <div class="card"><input id="search" placeholder="Search by name, type, doctor, tag or notes"><div id="list"></div></div>
 </div>
 </main>
 <script>
 const CHUNK = 3 * 1024 * 1024, enc = new TextEncoder(), dec = new TextDecoder(), $ = id => document.getElementById(id);
-const FIELDS = [
-  ["fullName", "Full name"], ["dob", "Date of birth", "date"], ["mobile", "Mobile phone", "tel"],
-  ["address", "Home address"], ["emName", "Emergency contact name"],
-  ["emPhone", "Emergency contact phone", "tel"], ["emRel", "Emergency contact relationship"],
-  ["physician", "Primary physician"]
+const STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"];
+const CATEGORIES = ["Labs", "Imaging", "MRI", "Doctor's records", "Other"];
+// Profile sections: [title, fields]. An "addr" field set is [prefix, label for the unit box].
+const SECTIONS = [
+  ["About you", [["fullName", "Full name"], ["dob", "Date of birth", "date"], ["mobile", "Mobile phone", "tel"]]],
+  ["Home address", "addr", "", "Apartment / unit"],
+  ["Emergency contact", [["emName", "Name"], ["emPhone", "Phone", "tel"], ["emRel", "Relationship"]]],
+  ["Primary physician", [["physician", "Physician name"], ["physPhone", "Office phone", "tel"]]],
+  ["Physician's office address", "addr", "phys", "Suite"],
+  ["Health", [["allergies", "Known allergies", "textarea"]]]
 ];
+const addrKeys = pre => pre ? [pre + "Street", pre + "Unit", pre + "City", pre + "State", pre + "Zip"] : ["street", "apt", "city", "state", "zip"];
+const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map(k => [k]) : f);
+CATEGORIES.forEach(c => $("category").insertAdjacentHTML("beforeend", `<option>${c}</option>`));
 let masterKey, auth, index = [], profile = {}, pendingCode = "", pendingUser = "";
 
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
@@ -130,10 +150,38 @@ function show(id) {
   document.querySelectorAll(".screen").forEach(e => e.classList.toggle("hidden", e.id !== id));
   $("logout").classList.toggle("hidden", id !== "app");
 }
-const fieldsHTML = p => `<div class="grid">` + FIELDS.map(([k, l, t]) => `<div><label for="${p}${k}">${l}</label><input id="${p}${k}" type="${t || "text"}"></div>`).join("") + `</div>`;
-$("s_fields").innerHTML = fieldsHTML("s_"); $("p_fields").innerHTML = fieldsHTML("p_");
-const readFields = p => Object.fromEntries(FIELDS.map(([k]) => [k, $(p + k).value.trim()]));
-const fillFields = (p, o) => FIELDS.forEach(([k]) => { $(p + k).value = o[k] || ""; });
+const box = (p, k, l, t) => {
+  const id = p + k, lab = `<label for="${id}">${l}</label>`;
+  if (t === "textarea") return `<div class="wide">${lab}<textarea id="${id}" placeholder="For example: penicillin, peanuts, latex. Leave blank if none."></textarea></div>`;
+  if (t === "state") return `<div>${lab}<select id="${id}"><option value="">State</option>${STATES.map(x => `<option>${x}</option>`).join("")}</select></div>`;
+  if (t === "zip") return `<div>${lab}<input id="${id}" inputmode="numeric" maxlength="10" placeholder="ZIP"></div>`;
+  return `<div>${lab}<input id="${id}" type="${t || "text"}"></div>`;
+};
+function fieldsHTML(p) {
+  let h = "";
+  for (const [title, f, pre, unitLabel] of SECTIONS) {
+    h += `<div class="sect">${title}</div>`;
+    if (f === "addr") {
+      const [st, un, ci, sa, zi] = addrKeys(pre);
+      h += `<div class="addr">${box(p, st, "Street address")}${box(p, un, unitLabel)}</div>`;
+      h += `<div class="csz">${box(p, ci, "City")}${box(p, sa, "State", "state")}${box(p, zi, "ZIP code", "zip")}</div>`;
+    } else h += `<div class="grid">${f.map(([k, l, t]) => box(p, k, l, t)).join("")}</div>`;
+    if (title === "Health") h += `<label>Current medications</label><div id="${p}meds"></div><button type="button" class="link" id="${p}addMed">+ Add medication</button>`;
+  }
+  return h;
+}
+function addMedRow(p, m = {}) {
+  const row = document.createElement("div"); row.className = "med";
+  row.innerHTML = `<input placeholder="Medication name"><input placeholder="Dose (e.g. 10 mg)"><input placeholder="How often (e.g. once daily)"><button type="button" class="x" title="Remove">✕</button>`;
+  const [n, d, f] = row.querySelectorAll("input"); n.value = m.name || ""; d.value = m.dose || ""; f.value = m.freq || "";
+  row.querySelector("button").onclick = () => row.remove();
+  $(p + "meds").appendChild(row);
+}
+for (const p of ["s_", "p_"]) { $(p + "fields").innerHTML = fieldsHTML(p); $(p + "addMed").onclick = () => addMedRow(p); }
+const readMeds = p => [...$(p + "meds").children].map(r => { const [n, d, f] = r.querySelectorAll("input"); return { name: n.value.trim(), dose: d.value.trim(), freq: f.value.trim() }; }).filter(m => m.name);
+const readFields = p => ({ ...Object.fromEntries(FIELDS.map(([k]) => [k, $(p + k).value.trim()])), meds: readMeds(p) });
+const fillFields = (p, o) => { FIELDS.forEach(([k]) => { $(p + k).value = o[k] || ""; }); $(p + "meds").innerHTML = ""; (o.meds || []).forEach(m => addMedRow(p, m)); if (!(o.meds || []).length) addMedRow(p); };
+addMedRow("s_");
 const exists = async vid => (await (await fetch("/api/exists", { headers: { "x-vault": vid } })).text()) === "yes";
 
 async function busy(btn, label, fn) {
@@ -229,13 +277,37 @@ $("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {
 });
 
 // Profile
+// Joins the address boxes into one readable address
+function fmtAddr(o, pre) {
+  const [st, un, ci, sa, zi] = addrKeys(pre).map(k => o[k] || "");
+  const line1 = [st, un].filter(Boolean).join(", "), line2 = [ci, [sa, zi].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return [line1, line2].filter(Boolean).join(", ") || (!pre && o.address) || "";
+}
 function renderProfile() {
   const v = $("profileView"); v.innerHTML = "";
-  [["email", "Email (sign-in)"], ...FIELDS].forEach(([k, l]) => {
-    if (!profile[k]) return;
+  const line = (label, value) => {
+    if (!value) return false;
     const d = document.createElement("div"), s = document.createElement("span");
-    s.textContent = l; d.append(s, profile[k]); v.appendChild(d);
-  });
+    s.textContent = label; d.append(s, value); v.appendChild(d); return true;
+  };
+  const head = t => { const h = document.createElement("div"); h.className = "sect"; h.textContent = t; v.appendChild(h); return h; };
+  for (const [title, f, pre] of SECTIONS) {
+    if (title === "Physician's office address") continue;
+    const h = head(title); let any = title === "About you" && line("Email (sign-in)", profile.email);
+    if (f === "addr") any = line("Address", fmtAddr(profile, pre)) || any;
+    else for (const [k, l] of f) any = line(l, profile[k]) || any;
+    if (title === "Primary physician") any = line("Office address", fmtAddr(profile, "phys")) || any;
+    if (title === "Health") {
+      const meds = profile.meds || [];
+      if (meds.length) {
+        const d = document.createElement("div"), s = document.createElement("span"), ul = document.createElement("ul");
+        s.textContent = "Current medications";
+        meds.forEach(m => { const li = document.createElement("li"); li.textContent = [m.name, m.dose, m.freq].filter(Boolean).join(" · "); ul.appendChild(li); });
+        d.append(s, ul); v.appendChild(d); any = true;
+      }
+    }
+    if (!any) h.remove();
+  }
   if (!v.children.length) v.innerHTML = "<p class='src'>No profile details yet. Click Edit to add them.</p>";
 }
 $("editProfile").onclick = () => {
@@ -252,6 +324,7 @@ $("saveProfile").onclick = () => busy($("saveProfile"), "Saving...", async () =>
 // Records
 $("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
   const files = [...$("file").files]; if (!files.length) return alert("Choose a file first.");
+  if (!$("category").value) return alert("Choose a record type.");
   for (const f of files) {
     const id = crypto.randomUUID(), chunks = Math.ceil(f.size / CHUNK) || 1;
     for (let n = 0; n < chunks; n++) {
@@ -260,7 +333,7 @@ $("upload").onclick = () => busy($("upload"), "Uploading...", async () => {
       const r = await api(`file/${id}/${n}`, { method: "PUT", body: await seal(masterKey, part) });
       if (!r.ok) { $("status").textContent = "Upload failed."; return; }
     }
-    index.push({ id, name: f.name, type: f.type, size: f.size, chunks,
+    index.push({ id, name: f.name, type: f.type, size: f.size, chunks, category: $("category").value,
       doctor: $("doctor").value.trim(), date: $("date").value,
       tags: $("tags").value.split(",").map(t => t.trim()).filter(Boolean),
       notes: $("notes").value.trim(), source: "Uploaded by patient", added: new Date().toISOString() });
@@ -285,7 +358,7 @@ async function remove(rec) {
 
 function render() {
   const q = $("search").value.toLowerCase(), list = $("list"); list.innerHTML = "";
-  const hits = index.filter(r => [r.name, r.doctor, r.notes, ...r.tags].join(" ").toLowerCase().includes(q))
+  const hits = index.filter(r => [r.name, r.category, r.doctor, r.notes, ...r.tags].join(" ").toLowerCase().includes(q))
     .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   let year;
   for (const r of hits) {
@@ -295,6 +368,7 @@ function render() {
     row.innerHTML = `<div><strong></strong><br><span class="src"></span><br></div><div><button>Open</button> <button>Delete</button></div>`;
     row.querySelector("strong").textContent = r.name;
     row.querySelector(".src").textContent = `${r.doctor || "No doctor"} | ${r.date || "No date"} | ${r.source}`;
+    if (r.category) { const c = document.createElement("span"); c.className = "cat"; c.textContent = r.category; row.firstChild.appendChild(c); }
     r.tags.forEach(t => { const s = document.createElement("span"); s.className = "tag"; s.textContent = t; row.firstChild.appendChild(s); });
     const [o, d] = row.querySelectorAll("button"); o.onclick = () => view(r); d.onclick = () => remove(r);
     list.appendChild(row);
