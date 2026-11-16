@@ -52,6 +52,18 @@
  .hdr-right{display:flex;align-items:center;gap:10px}
  .who{display:flex;align-items:center;gap:16px;padding:6px 0 10px!important} .pf .who div{border:0;padding:0} .who .nm{font-size:20px;font-weight:700} .who .em{font-size:13px;color:#5b7493}
  .photo-pick{display:flex;align-items:center;gap:14px;margin:6px 0} .photo-pick .btns{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+ .trend.click,.cli.click{cursor:pointer;border-radius:8px} .trend.click:hover,.cli.click:hover{background:#f0f6fd}
+ .chev{color:#9db6d3;font-size:20px;margin-left:4px}
+ .overlay{position:fixed;inset:0;background:#0b2e5966;z-index:50;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 12px}
+ .panel{background:#fff;border-radius:16px;max-width:760px;width:100%;padding:18px 18px 24px;box-shadow:0 10px 40px #0b2e5940}
+ .panel h2{margin:0} .panel .close{background:#fff;color:#1f6fb2;border:1px solid #c9dcf2;font-size:16px;padding:6px 12px}
+ .seg{display:flex;background:#eef4fb;border-radius:9px;padding:3px;margin:14px 0 10px;gap:2px}
+ .seg button{flex:1;background:none;color:#0b2e59;padding:6px 0;margin:0;border-radius:7px;font-size:14px}
+ .seg button.on{background:#fff;box-shadow:0 1px 3px #0b2e5926;font-weight:700}
+ .readout .lab{font-size:12px;color:#5b7493;text-transform:uppercase;letter-spacing:.5px} .readout .big{font-size:30px;font-weight:700} .readout .big small{font-size:15px;font-weight:500;color:#5b7493} .readout .when{font-size:13px;color:#5b7493}
+ .chart{width:100%;margin:8px 0 4px;touch-action:pan-y} .chart text{font-size:11px;fill:#7790ab}
+ .hist{margin-top:14px;max-height:340px;overflow-y:auto;border-top:1px solid #dbe8f7}
+ .hist div{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid #f0f4fa;font-size:14px} .hist span:last-child{font-weight:600}
  .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
  @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
@@ -159,7 +171,7 @@ const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map
 const isTel = k => FIELDS.some(([key, , t]) => key === k && t === "tel");
 const catOptions = () => `<option value="">Choose a type</option>` + CATEGORIES.map(c => `<option>${c}</option>`).join("");
 $("allCat").innerHTML = catOptions();
-let masterKey, auth, index = [], profile = {}, summary = null, apple = null, pendingCode = "", pendingUser = "";
+let masterKey, auth, index = [], profile = {}, summary = null, apple = null, appleDaily = null, pendingCode = "", pendingUser = "";
 
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
@@ -299,7 +311,7 @@ async function busy(btn, label, fn) {
   finally { btn.disabled = false; btn.textContent = t; }
 }
 async function enterApp() {
-  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); renderApple();
+  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); renderApple();
   renderProfile(); render(); show("app");
 }
 
@@ -600,7 +612,7 @@ const ORDER = ["restingHR", "heartRate", "hrv", "bpSys", "bpDia", "weight", "spo
 const attr = (tag, name) => { const m = tag.match(new RegExp(" " + name + '="([^"]*)"')); return m ? m[1] : ""; };
 const loadScript = src => new Promise((ok, fail) => { const sc = document.createElement("script"); sc.src = src; sc.onload = ok; sc.onerror = () => fail(new Error("could not load the unzip tool")); document.head.appendChild(sc); });
 
-function newAgg() { return { avg: {}, daily: {}, sleep: {}, units: {} }; }
+function newAgg() { return { avgD: {}, daily: {}, sleep: {}, units: {} }; }
 function addRecord(agg, tag) {
   const type = attr(tag, "type"), m = METRICS[type]; if (!m) return;
   const start = attr(tag, "startDate"), end = attr(tag, "endDate"), src = attr(tag, "sourceName");
@@ -613,18 +625,46 @@ function addRecord(agg, tag) {
   const v = parseFloat(attr(tag, "value")); if (!isFinite(v)) return;
   if (!agg.units[m.key]) agg.units[m.key] = m.unit || attr(tag, "unit");
   if (m.kind === "daily") { const day = start.slice(0, 10), d = (agg.daily[m.key] ??= {}), o = (d[day] ??= {}); o[src] = (o[src] || 0) + v; return; }
-  const mo = start.slice(0, 7), a = (agg.avg[m.key] ??= {}), c = (a[mo] ??= [0, 0]); c[0] += v * (m.scale || 1); c[1]++;
+  // per day: [sum, count, low, high]
+  const x = v * (m.scale || 1), a = (agg.avgD[m.key] ??= {}), c = (a[start.slice(0, 10)] ??= [0, 0, Infinity, -Infinity]);
+  c[0] += x; c[1]++; if (x < c[2]) c[2] = x; if (x > c[3]) c[3] = x;
 }
 // Turns the raw tallies into one value per month for each metric
 function monthly(agg) {
   const out = {};
   const perDay = days => { const mo = {}; for (const [day, srcs] of Object.entries(days)) { const best = Math.max(...Object.values(srcs)); const c = (mo[day.slice(0, 7)] ??= [0, 0]); c[0] += best; c[1]++; } return mo; };
-  for (const [k, mo] of Object.entries(agg.avg)) out[k] = mo;
+  for (const [k, days] of Object.entries(agg.avgD)) { const mo = {}; for (const [d, c] of Object.entries(days)) { const x = (mo[d.slice(0, 7)] ??= [0, 0]); x[0] += c[0]; x[1] += c[1]; } out[k] = mo; }
   for (const [k, days] of Object.entries(agg.daily)) out[k] = perDay(days);
   if (Object.keys(agg.sleep).length) out.sleep = perDay(agg.sleep);
   const res = {};
   for (const [k, mo] of Object.entries(out)) res[k] = Object.fromEntries(Object.entries(mo).sort().map(([m, [s, n]]) => [m, s / n]));
   return res;
+}
+
+// One value per day for each metric, packed as arrays from a start date (null = no data that day)
+const DAY = 864e5, dUTC = d => Date.parse(d + "T00:00:00Z"), isDay = d => /^\d{4}-\d\d-\d\d$/.test(d);
+const r2 = x => Math.round(x * 100) / 100;
+function dailySeries(agg) {
+  const out = {};
+  const pack = (k, map, kind) => {
+    const days = Object.keys(map).filter(isDay).sort(); if (!days.length) return;
+    const t0 = dUTC(days[0]), n = Math.round((dUTC(days.at(-1)) - t0) / DAY) + 1;
+    const v = new Array(n).fill(null), lo = kind === "avg" ? new Array(n).fill(null) : null, hi = lo && new Array(n).fill(null);
+    for (const d of days) {
+      const i = Math.round((dUTC(d) - t0) / DAY), c = map[d];
+      if (kind === "avg") { v[i] = r2(c[0] / c[1]); lo[i] = r2(c[2]); hi[i] = r2(c[3]); } else v[i] = r2(c);
+    }
+    out[k] = lo ? { start: days[0], kind, v, lo, hi } : { start: days[0], kind, v };
+  };
+  const best = days => Object.fromEntries(Object.entries(days).map(([d, srcs]) => [d, Math.max(...Object.values(srcs))]));
+  for (const [k, days] of Object.entries(agg.avgD)) pack(k, days, "avg");
+  for (const [k, days] of Object.entries(agg.daily)) pack(k, best(days), "sum");
+  if (Object.keys(agg.sleep).length) pack("sleep", best(agg.sleep), "sum");
+  // stay under the upload limit: drop daily lows/highs first, then the oldest days
+  const size = () => JSON.stringify(out).length;
+  for (const k of Object.keys(out)) if (size() > 3500000) { delete out[k].lo; delete out[k].hi; }
+  while (size() > 3500000) for (const sr of Object.values(out)) if (sr.v.length > 365) { const cut = Math.ceil(sr.v.length / 10); sr.v.splice(0, cut); sr.lo?.splice(0, cut); sr.hi?.splice(0, cut); sr.start = new Date(dUTC(sr.start) + cut * DAY).toISOString().slice(0, 10); }
+  return out;
 }
 
 // ---- clinical records (FHIR JSON from providers linked in Apple Health) ----
@@ -726,6 +766,7 @@ $("appleImport").onclick = () => busy($("appleImport"), "Importing...", async ()
   for (const kind of ["Vitals", "Labs"]) while (JSON.stringify(data).length > 3500000 && data.clinical.some(c => c.kind === kind)) {
     const i = data.clinical.map(c => c.kind).lastIndexOf(kind); data.clinical.splice(i, 1);
   }
+  appleDaily = dailySeries(agg); await saveBlob("appleDaily", appleDaily);
   apple = data; await saveBlob("apple", apple); renderApple();
   status.textContent = `Imported ${records.toLocaleString()} measurements and ${clinical.length} records from your doctors.`;
   $("appleFile").value = "";
@@ -754,9 +795,11 @@ function renderApple() {
       const unit = (apple.units[k] || m.unit || "").replace("count/min", "bpm");
       const yr = months.slice(-12).map(x => apple.trends[k][x]), avg = yr.reduce((a, b) => a + b, 0) / yr.length;
       const series = months.slice(-24).map(x => apple.trends[k][x]);
-      const row = document.createElement("div"); row.className = "trend";
-      row.innerHTML = `<span></span><span><b>${fmt(apple.trends[k][last])}</b> ${esc(unit)}<br><span class="src">${monthName(last)}</span></span><span class="avg">${fmt(avg)} ${esc(unit)}</span>${spark(series)}`;
-      row.firstChild.textContent = m.label; t.appendChild(row);
+      const row = document.createElement("div"); row.className = "trend click"; row.tabIndex = 0; row.title = "See full history";
+      row.innerHTML = `<span><span></span><span class="chev">›</span></span><span><b>${fmt(apple.trends[k][last])}</b> ${esc(unit)}<br><span class="src">${monthName(last)}</span></span><span class="avg">${fmt(avg)} ${esc(unit)}</span>${spark(series)}`;
+      row.firstChild.firstChild.textContent = m.label;
+      row.onclick = () => openMetric(k); row.onkeydown = e => { if (e.key === "Enter") openMetric(k); };
+      t.appendChild(row);
     }
   }
   const items = apple.clinical || [];
@@ -777,12 +820,169 @@ function renderApple() {
         if (extra) { const sm = document.createElement("div"); sm.className = "src"; sm.textContent = extra; left.appendChild(sm); }
         if (i.flag) { const f = document.createElement("span"); f.className = "flag"; f.textContent = " " + (/^L/.test(i.flag) ? "LOW" : /^H/.test(i.flag) ? "HIGH" : "ABNORMAL"); left.firstChild.after(f); }
         const d = document.createElement("span"); d.className = "d"; d.textContent = i.date || "";
-        r.append(left, d); det.appendChild(r);
+        r.append(left, d);
+        if ((kind === "Labs" || kind === "Vitals") && isFinite(parseFloat(i.value))) {
+          r.classList.add("click"); r.title = "See all results"; r.onclick = () => openLab(i.title);
+          d.insertAdjacentHTML("beforeend", ` <span class="chev">›</span>`);
+        }
+        det.appendChild(r);
       }
       c.appendChild(det);
     }
   }
 }
+// ---------- history detail (like Apple Health's charts) ----------
+const RANGES = [["W", "Week"], ["M", "Month"], ["6M", "6 months"], ["Y", "Year"], ["All", "All time"]];
+const fmtD = (t, o) => new Date(t).toLocaleDateString(undefined, { timeZone: "UTC", ...o });
+const monYY = t => `${fmtD(t, { month: "short" })} '${fmtD(t, { year: "2-digit" })}`;
+function niceTicks(lo, hi, n = 4) {
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const raw = (hi - lo) / n, mag = 10 ** Math.floor(Math.log10(raw)), step = [1, 2, 2.5, 5, 10].map(x => x * mag).find(x => x >= raw);
+  const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, t = [];
+  for (let x = a; x <= b + step / 2; x += step) t.push(+x.toFixed(10));
+  return t;
+}
+function openPanel(title) {
+  closePanel();
+  const ov = document.createElement("div"); ov.className = "overlay"; ov.id = "overlay";
+  ov.innerHTML = `<div class="panel" role="dialog" aria-modal="true"><div class="row"><h2></h2><button class="close" aria-label="Close">Close</button></div><div id="pBody"></div></div>`;
+  ov.querySelector("h2").textContent = title;
+  ov.onclick = e => { if (e.target === ov) closePanel(); }; ov.querySelector(".close").onclick = closePanel;
+  document.body.appendChild(ov); document.body.style.overflow = "hidden";
+  return ov.querySelector("#pBody");
+}
+function closePanel() { $("overlay")?.remove(); document.body.style.overflow = ""; }
+document.addEventListener("keydown", e => { if (e.key === "Escape") closePanel(); });
+
+// Groups daily values into the bars/points for a range
+function buckets(sr, range) {
+  const t0 = dUTC(sr.start), lastI = sr.v.length - 1, end = t0 + lastI * DAY;
+  const groups = [];
+  const add = (from, to, label, long) => { // day indexes, inclusive
+    const vals = [], los = [], his = [];
+    for (let i = Math.max(0, from); i <= Math.min(lastI, to); i++) if (sr.v[i] != null) { vals.push(sr.v[i]); if (sr.lo) { los.push(sr.lo[i]); his.push(sr.hi[i]); } }
+    groups.push({ label, long, v: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null, lo: los.length ? Math.min(...los) : null, hi: his.length ? Math.max(...his) : null, n: vals.length });
+  };
+  const idx = t => Math.round((t - t0) / DAY);
+  if (range === "W" || range === "M") {
+    const n = range === "W" ? 7 : 30;
+    for (let k = n - 1; k >= 0; k--) { const t = end - k * DAY, i = idx(t); add(i, i, range === "W" ? fmtD(t, { weekday: "short" }) : fmtD(t, { day: "numeric" }), fmtD(t, { weekday: "short", month: "short", day: "numeric", year: "numeric" })); }
+  } else if (range === "6M") {
+    const endI = idx(end), weekEnd = endI + (6 - new Date(end).getUTCDay()); // weeks end on Saturday
+    for (let k = 25; k >= 0; k--) { const to = weekEnd - k * 7, from = to - 6, ft = t0 + from * DAY;
+      add(from, to, fmtD(ft, { month: "short", day: "numeric" }), `Week of ${fmtD(ft, { month: "short", day: "numeric", year: "numeric" })}`); }
+  } else {
+    const e = new Date(end), months = [];
+    if (range === "Y") for (let k = 11; k >= 0; k--) months.push(new Date(Date.UTC(e.getUTCFullYear(), e.getUTCMonth() - k, 1)));
+    else { const s0 = new Date(t0); for (let d = new Date(Date.UTC(s0.getUTCFullYear(), s0.getUTCMonth(), 1)); d <= e; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) months.push(d); }
+    for (const d of months) { const nx = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+      add(idx(+d), idx(nx) - 1, (range === "Y" ? fmtD(+d, { month: "narrow" }) : monYY(+d)), fmtD(+d, { month: "long", year: "numeric" })); }
+  }
+  return groups;
+}
+
+// Draws bars (totals like steps) or points with low-high ranges (readings like heart rate)
+function drawChart(box, groups, opt, onPick) {
+  const W = Math.max(300, box.clientWidth || 600), H = 230, L = 8, R = 44, T = 10, B = 26;
+  const vals = groups.flatMap(g => [g.v, opt.bars ? null : g.lo, opt.bars ? null : g.hi]).filter(x => x != null);
+  if (opt.band) vals.push(...opt.band.filter(x => x != null));
+  if (!vals.length) { box.innerHTML = `<p class="src">No data in this period.</p>`; return; }
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (opt.bars) lo = 0; else { const pad = (hi - lo) * 0.15 || Math.abs(hi) * 0.05 || 1; lo -= pad; hi += pad; }
+  const ticks = niceTicks(lo, hi); lo = ticks[0]; hi = ticks.at(-1);
+  const n = groups.length, cw = (W - L - R) / n, y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo)), xc = i => L + cw * (i + 0.5);
+  let svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img">`;
+  for (const t of ticks) svg += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="#e6eef8"/><text x="${W - R + 6}" y="${y(t) + 4}">${t.toLocaleString(undefined, { maximumFractionDigits: 2 })}</text>`;
+  if (opt.band) { const [bl, bh] = opt.band; const y1 = y(bh ?? hi), y2 = y(bl ?? lo); svg += `<rect x="${L}" width="${W - L - R}" y="${Math.min(y1, y2)}" height="${Math.abs(y2 - y1)}" fill="#e5f4e4" opacity=".8"/>`; }
+  const every = Math.ceil(n / (W < 500 ? 4 : 12));
+  groups.forEach((g, i) => { if (i % every === 0 || n <= 12) { const x = xc(i), anchor = x < 24 ? "start" : x > W - R - 24 ? "end" : "middle";
+    svg += `<text x="${anchor === "start" ? Math.max(2, x - 6) : x}" y="${H - 8}" text-anchor="${anchor}">${esc(g.label)}</text>`; } });
+  if (opt.bars) groups.forEach((g, i) => { if (g.v != null) { const bw = Math.max(2, Math.min(28, cw * 0.62)); svg += `<rect class="mk" data-i="${i}" x="${xc(i) - bw / 2}" y="${y(g.v)}" width="${bw}" height="${Math.max(1, y(lo) - y(g.v))}" rx="${Math.min(4, bw / 3)}" fill="#2a86d1"/>`; } });
+  else {
+    const pts = groups.map((g, i) => g.v == null ? null : [xc(i), y(g.v)]);
+    let path = "", pen = false; for (const p of pts) { if (!p) { pen = false; continue; } path += (pen ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1); pen = true; }
+    if (opt.line !== false) svg += `<path d="${path}" fill="none" stroke="#9cc5ea" stroke-width="2"/>`;
+    groups.forEach((g, i) => { if (g.v == null) return;
+      if (g.lo != null && g.hi != null && g.hi > g.lo) svg += `<line x1="${xc(i)}" x2="${xc(i)}" y1="${y(g.hi)}" y2="${y(g.lo)}" stroke="#2a86d1" stroke-width="${Math.max(2, Math.min(8, cw * 0.4))}" stroke-linecap="round" opacity=".35"/>`;
+      svg += `<circle class="mk" data-i="${i}" cx="${xc(i)}" cy="${y(g.v)}" r="${n > 60 ? 2.5 : 4}" fill="${g.flag ? "#c62828" : "#1f6fb2"}"/>`; });
+  }
+  groups.forEach((g, i) => { svg += `<rect class="hit" data-i="${i}" x="${L + cw * i}" y="${T}" width="${cw}" height="${H - T - B}" fill="transparent"/>`; });
+  svg += `<line id="cursor" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="#0b2e59" stroke-dasharray="3 3" opacity="0" pointer-events="none"/></svg>`;
+  box.innerHTML = svg;
+  const sv = box.querySelector("svg"), cur = sv.querySelector("#cursor");
+  const pick = i => { if (i == null || groups[i].v == null) { cur.setAttribute("opacity", 0); sv.querySelectorAll(".mk").forEach(m => m.setAttribute("opacity", 1)); onPick(null); return; }
+    cur.setAttribute("x1", xc(i)); cur.setAttribute("x2", xc(i)); cur.setAttribute("opacity", .5);
+    sv.querySelectorAll(".mk").forEach(m => m.setAttribute("opacity", +m.dataset.i === i ? 1 : .45)); onPick(groups[i]); };
+  sv.querySelectorAll(".hit").forEach(h => { h.onmouseenter = h.onclick = () => pick(+h.dataset.i); });
+  sv.onmouseleave = () => pick(null);
+}
+
+function openMetric(k) {
+  const m = Object.values(METRICS).find(x => x.key === k), unit = (apple.units[k] || m.unit || "").replace("count/min", "bpm");
+  const fmt = x => (+x).toLocaleString(undefined, { maximumFractionDigits: m.dp, minimumFractionDigits: m.dp });
+  const body = openPanel(m.label);
+  let sr = appleDaily?.[k];
+  if (!sr) { // imported before daily history was saved: fall back to monthly values
+    const months = Object.keys(apple.trends[k]).sort();
+    sr = null;
+    body.innerHTML = `<div class="note">Import your Apple Health export again to see day-by-day history. Showing monthly averages for now.</div><div id="pChart"></div><div class="hist" id="pHist"></div>`;
+    const groups = months.map(mo => ({ label: monthName(mo), long: monthName(mo), v: apple.trends[k][mo] }));
+    drawChart($("pChart"), groups, { bars: m.kind !== "avg" }, () => {});
+    $("pHist").innerHTML = groups.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${fmt(g.v)} ${esc(unit)}</span></div>`).join("");
+    return;
+  }
+  const isAvg = sr.kind === "avg", what = isAvg ? "Average" : m.kind === "sleep" ? "Average per night" : "Daily average";
+  body.innerHTML = `<div class="seg">${RANGES.map(([r, l]) => `<button data-r="${r}" title="${l}">${r}</button>`).join("")}</div>
+    <div class="readout"><div class="lab" id="pLab"></div><div class="big" id="pBig"></div><div class="when" id="pWhen"></div></div>
+    <div id="pChart"></div><div class="src" id="pHint"></div><div class="hist" id="pHist"></div>`;
+  const show = range => {
+    body.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.r === range));
+    const groups = buckets(sr, range), have = groups.filter(g => g.v != null);
+    const days = range === "W" || range === "M";
+    const avgAll = have.length ? have.reduce((a, g) => a + g.v * g.n, 0) / have.reduce((a, g) => a + g.n, 0) : null;
+    const lows = have.map(g => g.lo).filter(x => x != null), highs = have.map(g => g.hi).filter(x => x != null);
+    const span = have.length ? `${groups[0].long.replace("Week of ", "")} – ${groups.at(-1).long.replace("Week of ", "")}` : "";
+    const setRead = g => {
+      if (!g) {
+        $("pLab").textContent = isAvg && lows.length ? "Range" : what;
+        $("pBig").innerHTML = avgAll == null ? "No data" : isAvg && lows.length ? `${fmt(Math.min(...lows))}–${fmt(Math.max(...highs))} <small>${esc(unit)} · avg ${fmt(avgAll)}</small>` : `${fmt(avgAll)} <small>${esc(unit)}</small>`;
+        $("pWhen").textContent = span;
+      } else {
+        $("pLab").textContent = days ? (isAvg ? "Daily average" : m.kind === "sleep" ? "Asleep" : "Total") : what;
+        $("pBig").innerHTML = `${fmt(g.v)} <small>${esc(unit)}${g.lo != null && g.hi > g.lo ? ` · range ${fmt(g.lo)}–${fmt(g.hi)}` : ""}</small>`;
+        $("pWhen").textContent = g.long;
+      }
+    };
+    setRead(null);
+    drawChart($("pChart"), groups, { bars: !isAvg }, setRead);
+    $("pHint").textContent = "Point at or tap the chart to see a single " + (range === "6M" ? "week" : days ? "day" : "month") + ".";
+    $("pHist").innerHTML = have.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${fmt(g.v)} ${esc(unit)}${g.lo != null && g.hi > g.lo ? ` <span class="src">(${fmt(g.lo)}–${fmt(g.hi)})</span>` : ""}</span></div>`).join("") || `<p class="src">No data in this period.</p>`;
+  };
+  body.querySelectorAll(".seg button").forEach(b => b.onclick = () => show(b.dataset.r));
+  show("M");
+}
+
+// All results for one lab test, over time, with the reference range shaded
+function openLab(title) {
+  const items = (apple.clinical || []).filter(i => i.title === title && isFinite(parseFloat(i.value)) && i.date).sort((a, b) => a.date.localeCompare(b.date));
+  const body = openPanel(title);
+  const unit = (items.at(-1)?.value || "").replace(/^[-\d.,\s]+/, "");
+  const nums = (items.at(-1)?.range || "").match(/-?\d+(\.\d+)?/g)?.map(Number) || [];
+  const rg = items.at(-1)?.range || "", band = /≤|</.test(rg) ? [null, nums[0]] : /≥|>/.test(rg) ? [nums[0], null] : nums.length >= 2 ? [nums[0], nums[1]] : null;
+  const groups = items.map(i => ({ label: monYY(dUTC(i.date)), long: fmtD(dUTC(i.date), { month: "short", day: "numeric", year: "numeric" }), v: parseFloat(i.value), flag: i.flag, raw: i }));
+  body.innerHTML = `<div class="readout"><div class="lab" id="pLab"></div><div class="big" id="pBig"></div><div class="when" id="pWhen"></div></div><div id="pChart"></div>
+    <div class="src">${band ? "Green band = reference range" + (rg ? ` (${esc(rg)})` : "") + ". " : ""}Point at or tap a result for details.</div><div class="hist" id="pHist"></div>`;
+  const setRead = g => {
+    g = g || groups.at(-1);
+    $("pLab").textContent = g === groups.at(-1) ? "Latest result" : "Result";
+    $("pBig").innerHTML = `${esc(String(g.raw.value))}${g.flag ? ` <span class="flag" style="font-size:15px">${/^L/.test(g.flag) ? "LOW" : /^H/.test(g.flag) ? "HIGH" : "ABNORMAL"}</span>` : ""}`;
+    $("pWhen").textContent = `${g.long} · ${items.length} result${items.length === 1 ? "" : "s"} on file`;
+  };
+  setRead(null);
+  drawChart($("pChart"), groups, { bars: false, band }, setRead);
+  $("pHist").innerHTML = groups.slice().reverse().map(g => `<div><span>${esc(g.long)}</span><span>${esc(String(g.raw.value))}${g.flag ? ` <span class="flag">${/^L/.test(g.flag) ? "LOW" : /^H/.test(g.flag) ? "HIGH" : "!"}</span>` : ""}</span></div>`).join("");
+}
+
 // A compact text version of the Apple data for the AI summary
 function appleForAI() {
   if (!apple) return "";

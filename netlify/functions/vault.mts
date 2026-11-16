@@ -167,7 +167,7 @@ export default async (req: Request) => {
   if (route === "summarize" && req.method === "POST") return summarize(req);
 
   // Encrypted profile, record list and saved health summary
-  if (route === "profile" || route === "index" || route === "summary" || route === "apple") {
+  if (["profile", "index", "summary", "apple", "appleDaily"].includes(route)) {
     if (req.method === "GET") {
       const v = await s.get(`${vault}/${route}`);
       return v === null ? bad("Not found", 404) : new Response(v);
