@@ -94,7 +94,7 @@
  <p style="margin-top:-8px;color:#2e4a7d"><em>Your health story, all in one place.</em></p>
  <input id="user" type="email" placeholder="Email address" autocomplete="email">
  <input id="pass" type="password" placeholder="Passphrase" autocomplete="current-password">
- <button id="unlock">Unlock</button>
+ <button id="unlock">Unlock</button> <button class="ghost hidden" id="faceSignIn">Sign in with Face ID</button>
  <div class="row"><button class="link" id="toSignup">Create an account</button><button class="link" id="toReset">Forgot passphrase?</button></div>
  <p class="src">Your passphrase never leaves this device. Your records are encrypted before they are uploaded.</p>
 </div>
@@ -129,6 +129,12 @@
   <div class="row"><h2>My profile</h2><button id="editProfile">Edit</button></div>
   <div id="profileView" class="pf"></div>
   <div id="profileEdit" class="hidden"><div id="p_fields"></div><button id="saveProfile">Save profile</button></div>
+ </div>
+ <div class="card hidden" id="faceCard">
+  <div class="row"><h2>Face ID sign-in</h2><span class="src" id="faceWhen"></span></div>
+  <p class="src">Unlock LifeChart with Face ID or Touch ID instead of typing your passphrase. Turn it on once on each device. Your passphrase and recovery code still work.</p>
+  <button id="faceAdd">Turn on Face ID for this device</button>
+  <div id="faceList"></div>
  </div>
  <div class="card" id="summaryCard">
   <div class="row"><h2>Health summary</h2><span class="src" id="sumWhen"></span></div>
@@ -203,7 +209,7 @@ const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map
 const isTel = k => FIELDS.some(([key, , t]) => key === k && t === "tel");
 const catOptions = () => `<option value="">Choose a type</option>` + CATEGORIES.map(c => `<option>${c}</option>`).join("");
 $("allCat").innerHTML = catOptions();
-let masterKey, auth, index = [], profile = {}, summary = null, apple = null, appleDaily = null, manual = [], pendingCode = "", pendingUser = "";
+let masterKey, masterRaw = null, auth, index = [], profile = {}, summary = null, apple = null, appleDaily = null, manual = [], pendingCode = "", pendingUser = "";
 
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
@@ -342,9 +348,85 @@ async function busy(btn, label, fn) {
   try { await fn(); } catch (e) { alert("Something went wrong: " + e.message); }
   finally { btn.disabled = false; btn.textContent = t; }
 }
+// ---------- Face ID / Touch ID (passkeys with the WebAuthn PRF extension) ----------
+// The passkey never leaves the device. Each Face ID unlock makes the same 32-byte secret, from
+// which we derive (1) a key that locks a copy of the records key and (2) a sign-in token.
+const PRF_SALT = new Uint8Array(32).map((_, i) => "lifechart-faceid-prf-salt-v1....".charCodeAt(i));
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const fromB64u = s => fromB64(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+const hexBytes = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+const passkeysWork = () => !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
+async function fromPrf(secret) {
+  const ikm = await crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveBits"]);
+  const bits = info => crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: enc.encode("lifechart"), info: enc.encode(info) }, ikm, 256);
+  return { wrapKey: await crypto.subtle.importKey("raw", await bits("wrap"), "AES-GCM", false, ["encrypt", "decrypt"]), token: hex(await bits("token")) };
+}
+async function prfFor(credId) { // asks for Face ID and returns the passkey's secret
+  const cred = await navigator.credentials.get({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: location.hostname, userVerification: "required",
+    ...(credId ? { allowCredentials: [{ type: "public-key", id: fromB64u(credId) }] } : {}), extensions: { prf: { eval: { first: PRF_SALT } } } } });
+  return { cred, secret: cred.getClientExtensionResults().prf?.results?.first };
+}
+const deviceName = () => { const u = navigator.userAgent; return /iPhone/.test(u) ? "iPhone" : /iPad/.test(u) ? "iPad" : /Mac/.test(u) ? "Mac" : /Android/.test(u) ? "Android phone" : /Windows/.test(u) ? "Windows PC" : "This device"; };
+const NO_PRF = "This device or browser can't use Face ID sign-in for LifeChart yet. It needs iOS 18 or newer in Safari, or a recent Mac with Safari or Chrome.";
+$("faceAdd").onclick = () => busy($("faceAdd"), "Waiting for Face ID...", async () => {
+  if (!(await mustBeCurrent())) return;
+  if (!passkeysWork() || !masterRaw) return alert(NO_PRF);
+  let cred;
+  try {
+    cred = await navigator.credentials.create({ publicKey: {
+      rp: { name: "LifeChart", id: location.hostname },
+      user: { id: hexBytes(auth["x-vault"]), name: profile.email || "LifeChart", displayName: profile.fullName || profile.email || "LifeChart" },
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+      authenticatorSelection: { residentKey: "required", userVerification: "required" },
+      extensions: { prf: { eval: { first: PRF_SALT } } } } });
+  } catch (e) { if (e.name === "NotAllowedError") return; throw e; }
+  const ext = cred.getClientExtensionResults().prf;
+  if (ext && ext.enabled === false) return alert(NO_PRF);
+  let secret = ext?.results?.first;
+  if (!secret) { // some devices only give the secret when signing in, so ask once more
+    try { secret = (await prfFor(b64u(cred.rawId))).secret; } catch (e) { if (e.name === "NotAllowedError") return; throw e; }
+  }
+  if (!secret) return alert(NO_PRF);
+  const f = await fromPrf(secret);
+  const r = await api("passkey", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: b64u(cred.rawId), ftoken: f.token, wrapF: toB64(await seal(f.wrapKey, masterRaw)), name: deviceName() }) });
+  if (!r.ok) throw new Error(await r.text() || "could not save Face ID");
+  await renderFace(); alert("Face ID is on for this device. Next time, tap \"Sign in with Face ID\".");
+});
+$("faceSignIn").onclick = () => busy($("faceSignIn"), "Waiting for Face ID...", async () => {
+  let got;
+  try { got = await prfFor(null); } catch (e) { if (e.name === "NotAllowedError") return; throw e; }
+  if (!got.secret) return alert(NO_PRF);
+  const handle = got.cred.response.userHandle; if (!handle) return alert("This passkey isn't a LifeChart sign-in.");
+  const vid = hex(handle), f = await fromPrf(got.secret);
+  const r = await fetch("/api/passkey/unlock", { headers: { "x-vault": vid, "x-ftoken": f.token } });
+  if (r.status === 404) return alert("No LifeChart account goes with this passkey anymore.");
+  if (!r.ok) return alert("Face ID sign-in was turned off for this device. Sign in with your passphrase and turn it on again.");
+  try { masterRaw = new Uint8Array(await open(f.wrapKey, fromB64(await r.text()))); masterKey = await importMaster(masterRaw); }
+  catch { return alert("We couldn't unlock your records with Face ID. Sign in with your passphrase."); }
+  auth = { "x-vault": vid, "x-token": f.token };
+  await enterApp();
+});
+async function renderFace() {
+  $("faceCard").classList.toggle("hidden", !passkeysWork());
+  if (!passkeysWork()) return;
+  const r = await api("passkey"); const list = r.ok ? await r.json() : [];
+  $("faceWhen").textContent = list.length ? `On for ${list.length} device${list.length === 1 ? "" : "s"}` : "";
+  $("faceAdd").textContent = list.length ? "Turn on Face ID for another device" : "Turn on Face ID for this device";
+  $("faceList").innerHTML = list.map(p => `<div class="entry"><span>${esc(p.name)}<br><span class="src">Added ${esc(new Date(p.added).toLocaleDateString())}</span></span><button class="x" data-pk="${esc(p.id)}" title="Turn off">Turn off</button></div>`).join("");
+  $("faceList").querySelectorAll("[data-pk]").forEach(b => b.onclick = () => busy(b, "…", async () => {
+    if (!confirm("Turn off Face ID sign-in for this device? You can turn it on again any time.")) return;
+    const d = await api("passkey/" + encodeURIComponent(b.dataset.pk), { method: "DELETE" });
+    if (!d.ok) throw new Error("could not turn it off");
+    await renderFace();
+  }));
+}
+if (passkeysWork()) $("faceSignIn").classList.remove("hidden");
+
 async function enterApp() {
   index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); manual = await loadBlob("manual", []); renderApple(); renderLabs();
-  renderProfile(); render(); show("app");
+  renderProfile(); render(); show("app"); renderFace().catch(() => {});
 }
 
 $("toSignup").onclick = () => show("signup");
@@ -364,7 +446,7 @@ $("unlock").onclick = () => busy($("unlock"), "Unlocking...", async () => {
   if (r.status === 401) return alert("Wrong passphrase.");
   const wrapped = r.ok ? await r.text() : "";
   if (!wrapped) return alert("We couldn't open your account. Please try again in a moment.");
-  try { masterKey = await importMaster(new Uint8Array(await open(k.wrapKey, fromB64(wrapped)))); }
+  try { masterRaw = new Uint8Array(await open(k.wrapKey, fromB64(wrapped))); masterKey = await importMaster(masterRaw); }
   catch { return alert("We couldn't unlock your account. Check your passphrase and try again."); }
   $("pass").value = ""; await enterApp();
 });
@@ -386,7 +468,7 @@ $("create").onclick = () => busy($("create"), "Creating...", async () => {
     body: JSON.stringify({ rtoken: rk.token, wrapP: toB64(await seal(k.wrapKey, master)), wrapR: toB64(await seal(rk.wrapKey, master)) }) });
   if (r.status === 409) return alert("There is already an account with that email. Try signing in.");
   if (!r.ok) throw new Error("could not create the account");
-  masterKey = await importMaster(master);
+  masterRaw = master; masterKey = await importMaster(master);
   profile = info; index = [];
   await saveBlob("profile", profile);
   pendingCode = code; pendingUser = u; $("codeBox").textContent = code;
@@ -403,7 +485,7 @@ $("printCode").onclick = () => window.print();
 // Saving the record list marks sign-up as finished, so it happens only after the code is saved
 $("continue").onclick = () => busy($("continue"), "Finishing...", async () => {
   await saveBlob("index", index);
-  pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); renderSummary(); renderApple(); renderLabs(); show("app");
+  pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); renderSummary(); renderApple(); renderLabs(); show("app"); renderFace().catch(() => {});
 });
 
 // Forgot passphrase
@@ -424,7 +506,7 @@ $("doReset").onclick = () => busy($("doReset"), "Resetting...", async () => {
   const r2 = await fetch("/api/reset", { method: "POST", headers: { ...rh, "content-type": "application/json" },
     body: JSON.stringify({ token: k.token, wrapP: toB64(await seal(k.wrapKey, master)) }) });
   if (!r2.ok) throw new Error("could not save the new passphrase");
-  auth = { "x-vault": vid, "x-token": k.token }; masterKey = await importMaster(master);
+  auth = { "x-vault": vid, "x-token": k.token }; masterRaw = master; masterKey = await importMaster(master);
   $("r_code").value = $("r_pass").value = $("r_pass2").value = "";
   await enterApp(); alert("Your passphrase has been changed. Your recovery code still works.");
 });

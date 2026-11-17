@@ -8,7 +8,10 @@ const HEX = /^[a-f0-9]{64}$/;
 const ID = /^[a-zA-Z0-9-]{8,64}$/;
 const B64 = /^[A-Za-z0-9+/=]{20,4000}$/;
 
-type Account = { auth: string; rauth: string; wrapP: string; wrapR: string };
+// passkeys: Face ID / Touch ID sign-ins. Each holds a hash of a token and a locked copy of the
+// records key; both come from a secret only that device's passkey can produce (WebAuthn PRF).
+type Passkey = { id: string; fauth: string; wrapF: string; name: string; added: string };
+type Account = { auth: string; rauth: string; wrapP: string; wrapR: string; passkeys?: Passkey[] };
 
 async function sha256(text: string) {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -184,8 +187,34 @@ export default async (req: Request) => {
     return bad("Not found", 404);
   }
 
-  // Everything below needs the passphrase login
-  if (!HEX.test(token) || acct.auth !== (await sha256(token))) return bad("Unauthorized", 401);
+  // Face ID sign-in: the device's passkey secret unlocks its locked copy of the records key
+  if (route === "passkey" && parts[1] === "unlock" && req.method === "GET") {
+    const ft = req.headers.get("x-ftoken") ?? "";
+    if (!HEX.test(ft)) return bad("Bad request");
+    const h = await sha256(ft), pk = (acct.passkeys || []).find(p => p.fauth === h);
+    return pk ? new Response(pk.wrapF) : bad("Unauthorized", 401);
+  }
+
+  // Everything below needs to be signed in (passphrase, or a Face ID passkey)
+  const th = HEX.test(token) ? await sha256(token) : "";
+  if (!th || (acct.auth !== th && !(acct.passkeys || []).some(p => p.fauth === th))) return bad("Unauthorized", 401);
+
+  if (route === "passkey") {
+    const list = acct.passkeys || [];
+    if (req.method === "GET") return Response.json(list.map(({ id, name, added }) => ({ id, name, added })));
+    if (req.method === "POST") {
+      const b = await req.json().catch(() => null);
+      if (!b || typeof b.id !== "string" || !/^[A-Za-z0-9_-]{8,1400}$/.test(b.id) || !HEX.test(b.ftoken ?? "") || !B64.test(b.wrapF ?? "")) return bad("Bad request");
+      if (list.length >= 10) return bad("Too many devices. Remove one first.", 409);
+      const pk: Passkey = { id: b.id, fauth: await sha256(b.ftoken), wrapF: b.wrapF, name: String(b.name || "This device").slice(0, 60), added: new Date().toISOString() };
+      await s.setJSON(`${vault}/account`, { ...acct, passkeys: [...list.filter(p => p.id !== b.id), pk] });
+      return new Response("added");
+    }
+    if (req.method === "DELETE" && parts[1]) {
+      await s.setJSON(`${vault}/account`, { ...acct, passkeys: list.filter(p => p.id !== parts[1]) });
+      return new Response("removed");
+    }
+  }
 
   if (route === "keys" && req.method === "GET") return new Response(acct.wrapP);
 
