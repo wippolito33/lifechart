@@ -583,7 +583,9 @@ const AI_IMAGE = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 const canSummarize = r => r.size <= AI_MAX && (r.type === "application/pdf" || AI_IMAGE.includes(r.type) || /^text\//.test(r.type) || /\.(txt|csv|xml|json)$/i.test(r.name));
 const esc = t => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function mdToHtml(md) {
-  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  // **bold**, *italic*, _italic_; any leftover lone asterisks are dropped
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?![*\w])/g, "$1<i>$2</i>")
+    .replace(/(^|\s)_(?!\s)(.+?)_(?=\s|[.,;:!?)]|$)/g, "$1<i>$2</i>").replace(/\*\*/g, "").replace(/(^|\s)\*(?=\S)/g, "$1");
   let h = "", inList = false;
   for (const raw of md.split("\n")) {
     const l = raw.trim();
@@ -605,17 +607,20 @@ function renderSummary() {
   $("summarize").textContent = has ? "Update summary" : "Summarize my records";
   $("sumIntro").classList.toggle("hidden", has);
 }
+// Bumped when record notes get more room, so notes written before are redone once
+const AI_V = 2;
+const needsRead = r => !r.ai || r.aiV !== AI_V;
 async function postSummary(body) {
   const r = await api("summarize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error(await r.text() || "the summary service did not respond");
-  return (await r.json()).text;
+  return await r.json(); // { text, truncated }
 }
 $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
   if (!(await mustBeCurrent())) return;
   if (!index.length && !apple && !manual.length) return alert("Add a record, a reading, or import Apple Health data first.");
   const ok = confirm("To write your summary, your records will be unlocked on this device and sent to an AI service (Anthropic's Claude) to be read. They are not stored there by LifeChart. The finished summary is saved encrypted with your records.\n\nContinue?");
   if (!ok) return;
-  const todo = index.filter(r => !r.ai && canSummarize(r)), skipped = index.filter(r => !r.ai && !canSummarize(r));
+  const todo = index.filter(r => needsRead(r) && canSummarize(r)), skipped = index.filter(r => !r.ai && !canSummarize(r));
   let done = 0, failed = [];
   for (const rec of todo) {
     $("sumStatus").textContent = `Reading ${rec.name} (${++done} of ${todo.length})...`;
@@ -623,16 +628,20 @@ $("summarize").onclick = () => busy($("summarize"), "Working...", async () => {
       const blob = await fileBlob(rec), body = { mode: "record", name: rec.name, category: rec.category, doctor: rec.doctor, date: rec.date, mime: rec.type };
       if (rec.type === "application/pdf" || AI_IMAGE.includes(rec.type)) body.data = toB64(new Uint8Array(await blob.arrayBuffer()));
       else body.text = await blob.text();
-      rec.ai = await postSummary(body); rec.aiAt = new Date().toISOString();
+      const res = await postSummary(body);
+      rec.ai = res.text + (res.truncated ? "\n(This record's note was cut short.)" : ""); rec.aiV = AI_V; rec.aiAt = new Date().toISOString();
       await saveBlob("index", index);
     } catch (e) { failed.push(`${rec.name} (${e.message})`); }
   }
   const have = index.filter(r => r.ai);
   if (!have.length && !apple && !manual.length && !Object.values(profile).some(Boolean)) { $("sumStatus").textContent = ""; return alert("None of your records could be read. " + (failed[0] || "")); }
-  $("sumStatus").textContent = "Writing your summary...";
+  $("sumStatus").textContent = "Writing your summary (3 parts)...";
   const { email, photo, ...prof } = profile;
-  const text = await postSummary({ mode: "overall", profile: prof, apple: appleForAI(),
-    records: have.map(r => ({ name: r.name, category: r.category, doctor: r.doctor, date: r.date, summary: r.ai })) });
+  const base = { mode: "overall", profile: prof, apple: appleForAI(),
+    records: have.map(r => ({ name: r.name, category: r.category, doctor: r.doctor, date: r.date, summary: r.ai })) };
+  // three parts written at the same time, then joined in order
+  const parts = await Promise.all([0, 1, 2].map(part => postSummary({ ...base, part })));
+  const text = parts.map(p => p.text.trim() + (p.truncated ? "\n\n_(This part was cut short. Click Update summary to try again.)_" : "")).filter(Boolean).join("\n\n");
   summary = { text, at: new Date().toISOString(), count: have.length };
   await saveBlob("summary", summary); renderSummary();
   const notes = [];

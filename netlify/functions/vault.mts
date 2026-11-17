@@ -58,21 +58,21 @@ Diagnoses / conditions
 Test results: name, value, units, reference range; mark anything outside range with (HIGH) or (LOW)
 Medications: anything started, stopped or changed
 Follow-up: recommendations or next steps
-Report only what the document says. Do not guess or add advice. Keep it under 250 words.`;
+Report only what the document says. Do not guess or add advice. Keep it under 300 words, and always finish your last sentence.`;
 
-const OVERALL_PROMPT = `You are helping a patient keep an organized personal health record.
-Below are the patient's profile, short summaries of each record in their file, and possibly Apple Health data (device trends and provider records). Write a clear, well-organized health summary the patient could read and share with a doctor. Use these markdown sections (## headings, - bullets), skipping any with nothing to report:
-## Overview
-## Conditions and diagnoses
-## Current medications
-## Allergies
-## Recent test results (flag anything out of range; include dates)
-## Health trends (from Apple Health, if present: notable changes over time in heart rate, blood pressure, weight, activity, sleep)
-## Imaging and procedures
-## Care team
-## Timeline (most recent first, one line each: date, what happened, source file)
-## Questions to discuss with your doctor
-Base everything only on the information given and name the source file for key facts. If records disagree or something is unclear, say so. Do not diagnose or give treatment advice. Write in plain language.`;
+// The overall summary is written in three parts at the same time, so each part has room
+// to finish and stays well inside the 60-second limit for a single request.
+const OVERALL_PARTS = [
+  ["## Overview", "## Conditions and diagnoses", "## Current medications", "## Allergies"],
+  ["## Recent test results (flag anything out of range; include dates)", "## Health trends (from Apple Health or readings the patient entered, if present: notable changes over time in heart rate, blood pressure, weight, glucose, activity, sleep)", "## Imaging and procedures"],
+  ["## Care team", "## Timeline (most recent first, at most 25 of the most important events, one line each: date, what happened, source file)", "## Questions to discuss with your doctor"],
+];
+const overallPrompt = (part: number) => `You are helping a patient keep an organized personal health record.
+Above are the patient's profile, short summaries of each record in their file, and possibly Apple Health data (device trends and provider records). You are writing PART ${part + 1} OF 3 of a health summary the patient could read and share with a doctor; other parts are written separately.
+Write ONLY these markdown sections, in this order (## headings, - bullets), skipping any with nothing to report:
+${OVERALL_PARTS[part].join("\n")}
+${part === 0 ? "Begin directly with the first section heading." : "Do not add a title, an introduction, or any other sections."}
+Base everything only on the information given and name the source file for key facts. If records disagree or something is unclear, say so. Do not diagnose or give treatment advice. Write in plain language and keep it concise (under about 900 words) so it is not cut off.`;
 
 const LABS_PROMPT = `Extract every numeric laboratory test result from the attached document.
 Return ONLY a JSON array (no other text). One object per result:
@@ -89,7 +89,8 @@ async function callClaude(content: any[], maxTokens: number) {
   });
   const j: any = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j?.error?.message || `AI service error (${r.status})`);
-  return (j.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n").trim();
+  const text = (j.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n").trim();
+  return { text, truncated: j.stop_reason === "max_tokens" };
 }
 
 async function summarize(req: Request) {
@@ -102,7 +103,7 @@ async function summarize(req: Request) {
       else if (IMAGE_TYPES.includes(b.mime)) block = { type: "image", source: { type: "base64", media_type: b.mime, data: b.data } };
       else if (typeof b.text === "string") block = { type: "text", text: "Document text:\n" + b.text.slice(0, 200000) };
       else return bad("This file type can't be read.");
-      const text = await callClaude([block, { type: "text", text: LABS_PROMPT }], 6000);
+      const { text } = await callClaude([block, { type: "text", text: LABS_PROMPT }], 6000);
       const start = text.indexOf("["), end = text.lastIndexOf("]");
       let labs: any[] = [];
       try { labs = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : []; } catch { return bad("The lab values couldn't be read from this file.", 502); }
@@ -121,16 +122,17 @@ async function summarize(req: Request) {
       else if (IMAGE_TYPES.includes(b.mime)) block = { type: "image", source: { type: "base64", media_type: b.mime, data: b.data } };
       else if (typeof b.text === "string") block = { type: "text", text: "Document text:\n" + b.text.slice(0, 200000) };
       else return bad("This file type can't be summarized.");
-      const text = await callClaude([block, { type: "text", text: meta + "\n\n" + RECORD_PROMPT }], 900);
-      return Response.json({ text });
+      const { text, truncated } = await callClaude([block, { type: "text", text: meta + "\n\n" + RECORD_PROMPT }], 1600);
+      return Response.json({ text, truncated });
     }
     if (b.mode === "overall") {
       const recs = (b.records || []).map((r: any) =>
         `### ${r.name} (${r.category || "record"}, ${r.date || "undated"}, ${r.doctor || "no doctor listed"})\n${r.summary || "(not summarized)"}`).join("\n\n");
       const appleData = typeof b.apple === "string" && b.apple ? `\n\nAPPLE HEALTH DATA (exported from the patient's iPhone: monthly averages from their devices, plus records their providers shared)\n${b.apple.slice(0, 150000)}` : "";
-      const input = `PATIENT PROFILE\n${JSON.stringify(b.profile || {}, null, 1)}\n\nRECORD SUMMARIES\n${recs || "(none)"}${appleData}\n\n${OVERALL_PROMPT}`;
-      const text = await callClaude([{ type: "text", text: input }], 3000);
-      return Response.json({ text });
+      const part = [0, 1, 2].includes(b.part) ? b.part : 0;
+      const input = `PATIENT PROFILE\n${JSON.stringify(b.profile || {}, null, 1)}\n\nRECORD SUMMARIES\n${recs || "(none)"}${appleData}\n\n${overallPrompt(part)}`;
+      const { text, truncated } = await callClaude([{ type: "text", text: input }], 3500);
+      return Response.json({ text, truncated });
     }
     return bad("Bad request");
   } catch (e: any) {
