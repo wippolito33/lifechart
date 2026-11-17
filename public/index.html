@@ -82,6 +82,11 @@
  .entry button.x{background:#fff;color:#c62828;border:1px solid #f1c6c6;padding:3px 9px;margin:0}
  .mine{display:inline-block;background:#e3f0fc;color:#1f6fb2;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:6px}
  @media(max-width:600px){.form-grid{grid-template-columns:1fr}}
+ .chk{display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid #f0f4fa;font-size:15px} .chk input{width:auto;margin:3px 0 0}
+ .chk small{display:block;color:#5b7493;font-size:12px} .chk.off{opacity:.45}
+ .reclist{max-height:240px;overflow-y:auto;border:1px solid #dbe8f7;border-radius:10px;padding:2px 10px;margin:6px 0}
+ .linkbox{font-family:ui-monospace,monospace;font-size:13px;background:#f0f6fd;border:1px solid #c9dcf2;border-radius:8px;padding:10px;word-break:break-all;margin:8px 0}
+ .banner{background:#0b2e59;color:#fff;border-radius:14px;padding:16px 18px;margin-bottom:16px} .banner .src{color:#c9dcf2}
  .upgrid{display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:8px}
  @media(max-width:600px){.grid,.addr,.csz,.upgrid{grid-template-columns:1fr}.med{grid-template-columns:1fr 1fr auto}.med input:first-child{grid-column:1/-1}.pf span{display:block;width:auto}}
 </style></head><body>
@@ -124,11 +129,18 @@
  <button id="doReset">Reset passphrase</button> <button class="link back">Back to sign in</button>
 </div>
 
+<div id="shareView" class="screen hidden"></div>
 <div id="app" class="screen hidden">
  <div class="card">
   <div class="row"><h2>My profile</h2><button id="editProfile">Edit</button></div>
   <div id="profileView" class="pf"></div>
   <div id="profileEdit" class="hidden"><div id="p_fields"></div><button id="saveProfile">Save profile</button></div>
+ </div>
+ <div class="card" id="shareCard">
+  <div class="row"><h2>Share with my doctor</h2><span class="src" id="shareWhen"></span></div>
+  <p class="src">Make a private link to the parts of your record you choose. Your doctor opens it in any browser, with no account. It stops working on the date you pick, and you can turn it off at any time.</p>
+  <button id="shareNew">Create a share link</button>
+  <div id="shareList"></div>
  </div>
  <div class="card hidden" id="faceCard">
   <div class="row"><h2>Face ID sign-in</h2><span class="src" id="faceWhen"></span></div>
@@ -209,7 +221,7 @@ const FIELDS = SECTIONS.flatMap(([, f, pre]) => f === "addr" ? addrKeys(pre).map
 const isTel = k => FIELDS.some(([key, , t]) => key === k && t === "tel");
 const catOptions = () => `<option value="">Choose a type</option>` + CATEGORIES.map(c => `<option>${c}</option>`).join("");
 $("allCat").innerHTML = catOptions();
-let masterKey, masterRaw = null, auth, index = [], profile = {}, summary = null, apple = null, appleDaily = null, manual = [], pendingCode = "", pendingUser = "";
+let masterKey, masterRaw = null, auth, shares = [], index = [], profile = {}, summary = null, apple = null, appleDaily = null, manual = [], pendingCode = "", pendingUser = "";
 
 const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
 const toB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode(...u8.subarray(i, i + 32768)); return btoa(s); };
@@ -251,6 +263,7 @@ async function loadBlob(name, fallback) {
 function show(id) {
   document.querySelectorAll(".screen").forEach(e => e.classList.toggle("hidden", e.id !== id));
   $("logout").classList.toggle("hidden", id !== "app"); $("hdrAvatar").classList.toggle("hidden", id !== "app");
+  if (id === "shareView") $("updateBar").classList.add("hidden");
 }
 const box = (p, k, l, t) => {
   const id = p + k, lab = `<label for="${id}">${l}</label>`;
@@ -425,7 +438,7 @@ async function renderFace() {
 if (passkeysWork()) $("faceSignIn").classList.remove("hidden");
 
 async function enterApp() {
-  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); manual = await loadBlob("manual", []); renderApple(); renderLabs();
+  index = await loadBlob("index", []); profile = await loadBlob("profile", {}); summary = await loadBlob("summary", null); renderSummary(); apple = await loadBlob("apple", null); appleDaily = await loadBlob("appleDaily", null); manual = await loadBlob("manual", []); shares = await loadBlob("shareList", []); renderApple(); renderLabs(); renderShares();
   renderProfile(); render(); show("app"); renderFace().catch(() => {});
 }
 
@@ -485,7 +498,7 @@ $("printCode").onclick = () => window.print();
 // Saving the record list marks sign-up as finished, so it happens only after the code is saved
 $("continue").onclick = () => busy($("continue"), "Finishing...", async () => {
   await saveBlob("index", index);
-  pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); renderSummary(); renderApple(); renderLabs(); show("app"); renderFace().catch(() => {});
+  pendingCode = ""; $("codeBox").textContent = ""; renderProfile(); render(); renderSummary(); renderApple(); renderLabs(); renderShares(); show("app"); renderFace().catch(() => {});
 });
 
 // Forgot passphrase
@@ -526,8 +539,11 @@ function fmtAddr(o, pre) {
   return [line1, line2].filter(Boolean).join(", ") || (!pre && o.address) || "";
 }
 function renderProfile() {
-  const v = $("profileView"); v.innerHTML = "";
   setAvatar($("hdrAvatar"), profile.photo, profile);
+  renderProfileInto($("profileView"), profile, { emailLabel: "Email (sign-in)", empty: "No profile details yet. Click Edit to add them." });
+}
+function renderProfileInto(v, profile, opt) {
+  v.innerHTML = "";
   const who = document.createElement("div"); who.className = "who";
   const av = document.createElement("span"); av.className = "avatar"; av.style.cssText = "width:84px;height:84px;font-size:30px"; setAvatar(av, profile.photo, profile);
   const txt = document.createElement("div"), nm = document.createElement("div"), em = document.createElement("div");
@@ -538,10 +554,10 @@ function renderProfile() {
     const d = document.createElement("div"), s = document.createElement("span");
     s.textContent = label; d.append(s, value); v.appendChild(d); return true;
   };
-  const head = t => { const h = document.createElement("div"); h.className = "sect"; h.textContent = t; v.appendChild(h); return h; };
+  const head = t => { const h = document.createElement("div"); h.className = "sect"; h.textContent = opt.titles?.[t] || t; v.appendChild(h); return h; };
   for (const [title, f, pre] of SECTIONS) {
     if (title === "Physician's office address") continue;
-    const h = head(title); let any = title === "About you" && line("Email (sign-in)", profile.email);
+    const h = head(title); let any = title === "About you" && line(opt.emailLabel, profile.email);
     if (f === "addr") any = line("Address", fmtAddr(profile, pre)) || any;
     else for (const [k, l, t] of f) any = line(l, t === "tel" ? formatPhone(profile[k]) : k === "dob" ? fmtDob(profile[k]) : profile[k]) || any;
     if (title === "Primary physician") any = line("Office address", fmtAddr(profile, "phys")) || any;
@@ -556,7 +572,7 @@ function renderProfile() {
     }
     if (!any) h.remove();
   }
-  if (!v.children.length) v.innerHTML = "<p class='src'>No profile details yet. Click Edit to add them.</p>";
+  if (!v.children.length) v.innerHTML = `<p class='src'>${opt.empty}</p>`;
 }
 $("editProfile").onclick = () => {
   fillFields("p_", profile);
@@ -606,6 +622,7 @@ $("applyBtn").onclick = () => {
 // A tab left open (especially on a phone) can keep running an old version after an update.
 let outdated = false;
 async function checkVersion() {
+  if (location.hash.startsWith("#share=")) return false; // the doctor's read-only page
   if (!/^[0-9a-f]{7,}$/.test(APP_VERSION)) return false; // not a deployed build (local testing)
   try {
     const live = (await (await fetch("/version.txt", { cache: "no-store" })).text()).trim();
@@ -1390,6 +1407,9 @@ function renderLabs() {
   $("labIntro").classList.toggle("hidden", series.length > 0);
   $("labWhen").textContent = series.length ? `${series.length} tests` : "";
   if (!series.length) { if (!unread) box.innerHTML = `<p class="src">Upload lab reports with the record type "Labs", or import Apple Health, to see your lab trends.</p>`; return; }
+  labTableInto(box, series, s => openLabSeries(s.key));
+}
+function labTableInto(box, series, onOpen) {
   for (const panel of PANELS) {
     const list = series.filter(s => s.panel === panel).sort((a, b) => LAB_RULES.findIndex(r => r[1] === a.key) - LAB_RULES.findIndex(r => r[1] === b.key) || a.label.localeCompare(b.label));
     if (!list.length) continue;
@@ -1400,13 +1420,13 @@ function renderLabs() {
       row.innerHTML = `<span><span></span><span class="chev">›</span><br><span class="src"></span></span><span><b>${labFmt(last.value)}</b> ${esc(last.unit)}${last.flag ? ` <span class="flag">${flagWord(last.flag)}</span>` : ""}<br><span class="src">${esc(fmtD(dUTC(last.date), { month: "short", day: "numeric", year: "numeric" }))}</span></span><span class="avg">${esc(rng)}</span>${spark(s.items.slice(-24).map(i => i.value)) || `<span class="src">1 result</span>`}`;
       row.querySelector("span span").textContent = s.label;
       row.querySelector("span .src").textContent = `${s.items.length} result${s.items.length === 1 ? "" : "s"}`;
-      row.onclick = () => openLabSeries(s.key); row.onkeydown = e => { if (e.key === "Enter") openLabSeries(s.key); };
+      row.onclick = () => onOpen(s); row.onkeydown = e => { if (e.key === "Enter") onOpen(s); };
       box.appendChild(row);
     }
   }
 }
-function openLabSeries(key) {
-  const s = buildLabSeries().get(key); if (!s) return;
+function openLabSeries(key) { const s = buildLabSeries().get(key); if (s) openLabData(s); }
+function openLabData(s) {
   const items = s.items, last = items.at(-1), body = openPanel(s.label);
   const band = last.low != null || last.high != null ? [last.low, last.high] : null;
   const groups = items.map(i => ({ label: monYY(dUTC(i.date)), long: fmtD(dUTC(i.date), { month: "short", day: "numeric", year: "numeric" }), v: i.value, flag: i.flag, raw: i }));
@@ -1443,6 +1463,180 @@ $("readLabs").onclick = () => busy($("readLabs"), "Reading...", async () => {
   const found = todo.reduce((n, r) => n + (r.labs?.length || 0), 0);
   $("labStatus").textContent = `Found ${found} lab result${found === 1 ? "" : "s"}.` + (failed.length ? ` Couldn't read: ${failed.join("; ")}.` : "");
 }).then(renderLabs);
+
+// ---------- Share with my doctor ----------
+// A share is a separate bundle encrypted with its own random key. The key lives only in the link
+// after "#", which browsers never send to a server, so LifeChart's server can't read what's shared.
+const SHARE_WHAT = [
+  ["about", "About me", "Name, date of birth, contact details, emergency contact, doctors"],
+  ["meds", "Medications and allergies", ""],
+  ["summary", "Health summary", "The AI-written summary of your records"],
+  ["labs", "Lab trends", "Every lab result over time, with charts"],
+  ["trends", "Health trends", "Blood pressure, weight, heart rate and more, month by month"],
+];
+const PROFILE_ABOUT = FIELDS.map(([k]) => k).filter(k => k !== "allergies");
+function shareAvailable(k) {
+  if (k === "summary") return !!summary?.text;
+  if (k === "labs") return buildLabSeries().size > 0;
+  if (k === "trends") return ORDER.some(key => key === "bp" ? trendOf("bpSys") : trendOf(key));
+  if (k === "meds") return !!((profile.meds || []).length || profile.allergies);
+  return true;
+}
+function renderShares() {
+  const box = $("shareList"); box.innerHTML = "";
+  const now = Date.now(), live = shares.filter(x => Date.parse(x.expires) > now);
+  $("shareWhen").textContent = live.length ? `${live.length} active link${live.length === 1 ? "" : "s"}` : "";
+  for (const x of shares.slice().sort((a, b) => b.created.localeCompare(a.created))) {
+    const expired = Date.parse(x.expires) <= now, row = document.createElement("div"); row.className = "entry";
+    row.innerHTML = `<span><b></b><br><span class="src"></span></span><span>${expired ? "" : `<button class="ghost" data-a="copy">Copy link</button> `}<button class="x" data-a="off">${expired ? "Remove" : "Turn off"}</button></span>`;
+    row.querySelector("b").textContent = x.label || "Share link";
+    row.querySelector(".src").textContent = `${x.what.join(", ")}${x.files ? ` · ${x.files} record${x.files === 1 ? "" : "s"}` : ""} · ${expired ? "expired" : "until"} ${fmtD(Date.parse(x.expires), { month: "short", day: "numeric", year: "numeric" })}`;
+    row.querySelector('[data-a="copy"]')?.addEventListener("click", e => copyText(x.link, e.target));
+    const off = row.querySelector('[data-a="off"]');
+    off.onclick = () => busy(off, "…", async () => {
+      if (!expired && !confirm(`Turn off the link for ${x.label || "this share"}? Anyone who has it won't be able to open it anymore.`)) return;
+      const r = await api("share/" + x.id, { method: "DELETE" }); if (!r.ok && r.status !== 404) throw new Error("could not turn it off");
+      shares = shares.filter(y => y.id !== x.id); await saveBlob("shareList", shares); renderShares();
+    });
+    box.appendChild(row);
+  }
+}
+async function copyText(t, btn) {
+  try { await navigator.clipboard.writeText(t); } catch { const ta = document.createElement("textarea"); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
+  if (btn) { const o = btn.textContent; btn.textContent = "Copied"; setTimeout(() => btn.textContent = o, 1500); }
+}
+$("shareNew").onclick = () => {
+  const body = openPanel("Share with my doctor");
+  const recs = index.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  body.innerHTML = `<div class="form-grid">
+     <div><label for="shLabel">Who is it for?</label><input id="shLabel" placeholder="e.g. Dr. Smith"></div>
+     <div><label for="shDays">Link works for</label><select id="shDays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">1 year</option></select></div></div>
+    <div class="sect">What to include</div>
+    ${SHARE_WHAT.map(([k, l, d]) => { const ok = shareAvailable(k); return `<label class="chk${ok ? "" : " off"}"><input type="checkbox" data-w="${k}" ${ok ? "checked" : "disabled"}><span>${l}<small>${ok ? d : "Nothing to share yet"}</small></span></label>`; }).join("")}
+    <div class="sect">Records <span class="src" style="text-transform:none;letter-spacing:0;font-weight:400">(copies of the files themselves)</span></div>
+    ${recs.length ? `<button class="link" id="shAll">Select all</button><div class="reclist">${recs.map(r => `<label class="chk"><input type="checkbox" data-r="${esc(r.id)}"><span>${esc(r.name)}<small>${esc([r.category, r.doctor, r.date && fmtD(dUTC(r.date), { month: "short", day: "numeric", year: "numeric" })].filter(Boolean).join(" · "))}</small></span></label>`).join("")}</div>` : `<p class="src">No records uploaded yet.</p>`}
+    <p class="src">Anyone who has the link can see what you choose here until it expires, so send it only to your doctor.</p>
+    <button id="shCreate">Create link</button> <span class="src" id="shStatus"></span>`;
+  $("shAll")?.addEventListener("click", () => { const boxes = body.querySelectorAll("[data-r]"), all = [...boxes].every(b => b.checked); boxes.forEach(b => b.checked = !all); $("shAll").textContent = all ? "Select all" : "Select none"; });
+  $("shCreate").onclick = () => busy($("shCreate"), "Creating...", async () => {
+    if (!(await mustBeCurrent())) return;
+    const what = [...body.querySelectorAll("[data-w]:checked")].map(b => b.dataset.w);
+    const picked = [...body.querySelectorAll("[data-r]:checked")].map(b => index.find(r => r.id === b.dataset.r)).filter(Boolean);
+    if (!what.length && !picked.length) return alert("Choose at least one thing to share.");
+    const label = $("shLabel").value.trim(), days = +$("shDays").value, expires = new Date(Date.now() + days * 864e5).toISOString();
+    const id = b64u(crypto.getRandomValues(new Uint8Array(18))), keyRaw = crypto.getRandomValues(new Uint8Array(32));
+    const K = await crypto.subtle.importKey("raw", keyRaw, "AES-GCM", false, ["encrypt", "decrypt"]);
+    // what the doctor will see
+    const shared = { fullName: profile.fullName || "", photo: profile.photo || "" };
+    if (what.includes("about")) { for (const k of PROFILE_ABOUT) if (profile[k]) shared[k] = profile[k]; if (profile.email) shared.email = profile.email; }
+    if (what.includes("meds")) { shared.meds = profile.meds || []; if (profile.allergies) shared.allergies = profile.allergies; }
+    const bundle = { v: 1, created: new Date().toISOString(), expires, label, profile: shared, what };
+    if (what.includes("summary")) bundle.summary = { text: summary.text, at: summary.at };
+    if (what.includes("labs")) bundle.labs = [...buildLabSeries().values()].map(({ key, label, panel, items }) => ({ key, label, panel, items }));
+    if (what.includes("trends")) bundle.trends = ORDER.map(k => {
+      if (k === "bp") { const S = trendOf("bpSys"), D = trendOf("bpDia"); return S && D ? { key: "bp", label: "Blood pressure", unit: "mmHg", sys: S, dia: D } : null; }
+      const tr = trendOf(k), m = Object.values(METRICS).find(x => x.key === k);
+      return tr && Object.keys(tr).length ? { key: k, label: m.label, unit: unitOf(k), dp: m.dp, kind: m.kind, months: tr } : null;
+    }).filter(Boolean);
+    bundle.records = picked.map(r => ({ fid: crypto.randomUUID(), src: r.id, name: r.name, category: r.category, doctor: r.doctor, date: r.date, type: r.type, size: r.size, chunks: r.chunks }));
+    $("shStatus").textContent = "Locking your shared copy...";
+    const locked = toB64(await seal(K, enc.encode(JSON.stringify({ ...bundle, records: bundle.records.map(({ src, ...rest }) => rest) }))));
+    const r = await api("share/" + id, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bundle: locked, expires }) });
+    if (!r.ok) throw new Error(r.status === 400 ? "the shared copy is too large; try fewer items" : "could not create the link");
+    try { // copy each chosen record, re-locked with the link's key
+      let i = 0;
+      for (const rec of bundle.records) {
+        $("shStatus").textContent = `Copying ${rec.name} (${++i} of ${bundle.records.length})...`;
+        for (let n = 0; n < rec.chunks; n++) {
+          const c = await api(`file/${rec.src}/${n}`); if (!c.ok) throw new Error("could not read " + rec.name);
+          const plain = await open(masterKey, new Uint8Array(await c.arrayBuffer()));
+          const u = await api(`share/${id}/file/${rec.fid}/${n}`, { method: "PUT", body: await seal(K, plain) }); if (!u.ok) throw new Error("could not copy " + rec.name);
+        }
+      }
+    } catch (e) { await api("share/" + id, { method: "DELETE" }); throw e; }
+    const link = `${location.origin}/#share=${id}.${b64u(keyRaw)}`;
+    const names = { about: "About me", meds: "Medications", summary: "Summary", labs: "Labs", trends: "Trends" };
+    shares.push({ id, link, label, created: bundle.created, expires, what: what.map(w => names[w]), files: picked.length });
+    await saveBlob("shareList", shares); renderShares();
+    body.innerHTML = `<p><b>Your link is ready.</b> It works until ${esc(fmtD(Date.parse(expires), { month: "long", day: "numeric", year: "numeric" }))}.</p>
+      <div class="linkbox" id="shLink"></div>
+      <div class="btnrow"><button id="shCopy">Copy link</button>${navigator.share ? ` <button class="ghost" id="shSend">Send…</button>` : ""} <a class="ghost" id="shMail" style="padding:9px 12px;border-radius:6px;border:1px solid #c9dcf2;color:#1f6fb2;text-decoration:none">Email it</a></div>
+      <p class="src">Send it only to your doctor: anyone with the link can open it. You can turn it off any time from "Share with my doctor".</p>`;
+    $("shLink").textContent = link;
+    $("shCopy").onclick = e => copyText(link, e.target);
+    $("shSend")?.addEventListener("click", () => navigator.share({ title: "My health record (LifeChart)", text: `Health record for ${profile.fullName || "me"}, shared from LifeChart:`, url: link }).catch(() => {}));
+    $("shMail").href = `mailto:?subject=${encodeURIComponent("My health record (LifeChart)")}&body=${encodeURIComponent(`Here is a private link to my health record. It works until ${fmtD(Date.parse(expires), { month: "long", day: "numeric", year: "numeric" })}.\n\n${link}\n\n${profile.fullName || ""}`)}`;
+  });
+};
+
+// ---- what the doctor sees when opening a share link ----
+async function openShare() {
+  const m = /^#share=([A-Za-z0-9_-]{20,40})\.([A-Za-z0-9_-]{40,50})$/.exec(location.hash);
+  const v = $("shareView"); show("shareView");
+  const fail = msg => { v.innerHTML = `<div class="card"><h2>This link can't be opened</h2><p>${esc(msg)}</p><p class="src">Ask the person who sent it for a new link.</p></div>`; };
+  if (!m) return fail("The link looks incomplete. Make sure the whole link was copied.");
+  v.innerHTML = `<div class="card"><p class="src">Opening shared health record...</p></div>`;
+  const [, id, keyB64] = m;
+  let data, K;
+  try {
+    K = await crypto.subtle.importKey("raw", fromB64u(keyB64), "AES-GCM", false, ["decrypt", "encrypt"]);
+    const r = await fetch(`/api/s/${id}`, { cache: "no-store" });
+    if (!r.ok) return fail(await r.text() || "The link isn't working.");
+    data = JSON.parse(new TextDecoder().decode(await open(K, fromB64(await r.text()))));
+  } catch { return fail("The link looks damaged. Make sure the whole link was copied."); }
+  const p = data.profile || {}, expires = fmtD(Date.parse(data.expires), { month: "long", day: "numeric", year: "numeric" });
+  v.innerHTML = `<div class="banner"><div class="who" style="padding:0"><span class="avatar" id="shAv" style="width:64px;height:64px;font-size:24px"></span><div><div style="font-size:22px;font-weight:700" id="shName"></div>
+      <div class="src">Health record shared from LifeChart${data.label ? " with " + esc(data.label) : ""} · read-only · link works until ${esc(expires)}</div></div></div></div>
+    <div class="card" id="shProfile"><div class="row"><h2>Patient</h2><button class="ghost" id="shPrint">Print</button></div><div id="shProf" class="pf"></div></div>`;
+  $("shName").textContent = p.fullName || "Patient"; setAvatar($("shAv"), p.photo, p); $("shPrint").onclick = () => window.print();
+  renderProfileInto($("shProf"), p, { emailLabel: "Email", empty: "", titles: { "About you": "Personal details" } });
+  $("shProf").querySelector(".who")?.remove();
+  if (!$("shProf").children.length) $("shProfile").querySelector("#shProf").innerHTML = `<p class="src">Contact details weren't shared.</p>`;
+  const card = (title, extra = "") => { const c = document.createElement("div"); c.className = "card"; c.innerHTML = `<div class="row"><h2>${title}</h2><span class="src">${extra}</span></div>`; v.appendChild(c); return c; };
+  if (data.summary?.text) {
+    const c = card("Health summary", `Written ${esc(new Date(data.summary.at).toLocaleDateString())}`);
+    c.insertAdjacentHTML("beforeend", `<div class="note">AI-generated from the patient's records. It can contain mistakes; check the original records.</div><div class="sum">${mdToHtml(data.summary.text)}</div>`);
+  }
+  if (data.labs?.length) { const c = card("Lab trends", `${data.labs.length} tests · tap a test for every result`); const box = document.createElement("div"); c.appendChild(box); labTableInto(box, data.labs, s => openLabData(s)); }
+  if (data.trends?.length) {
+    const c = card("Health trends", "monthly averages · tap a row for its history");
+    c.insertAdjacentHTML("beforeend", `<div class="trend head"><span>Measure</span><span>Latest month</span><span class="avg">12-month average</span><span>Last 2 years</span></div>`);
+    for (const t of data.trends) {
+      const isBP = t.key === "bp", mo = Object.keys(isBP ? t.sys : t.months).filter(x => !isBP || t.dia[x] != null).sort(), last = mo.at(-1), yr = mo.slice(-12);
+      const f = x => isBP ? Math.round(x) : (+x).toLocaleString(undefined, { maximumFractionDigits: t.dp ?? 1, minimumFractionDigits: t.dp ?? 0 });
+      const val = m => isBP ? `${Math.round(t.sys[m])}/${Math.round(t.dia[m])}` : f(t.months[m]);
+      const avg = k => yr.reduce((a, m) => a + (k ? t[k][m] : t.months[m]), 0) / yr.length;
+      const row = document.createElement("div"); row.className = "trend click"; row.tabIndex = 0;
+      row.innerHTML = `<span><span></span><span class="chev">›</span></span><span><b>${val(last)}</b> ${esc(t.unit)}<br><span class="src">${monthName(last)}</span></span><span class="avg">${isBP ? `${Math.round(avg("sys"))}/${Math.round(avg("dia"))}` : f(avg())} ${esc(t.unit)}</span>${isBP ? spark(mo.slice(-24).map(m => t.sys[m]), mo.slice(-24).map(m => t.dia[m])) : spark(mo.slice(-24).map(m => t.months[m]))}`;
+      row.firstChild.firstChild.textContent = t.label;
+      row.onclick = () => {
+        const body = openPanel(t.label), groups = mo.map(m => ({ label: monYY(dUTC(m + "-01")), long: monthName(m), v: isBP ? t.sys[m] : t.months[m], v2: isBP ? t.dia[m] : undefined }));
+        body.innerHTML = `<div class="src">Monthly averages</div><div id="pChart"></div><div class="hist" id="pHist"></div>`;
+        drawChart($("pChart"), groups, isBP ? { pair: true } : { bars: t.kind !== "avg" }, () => {});
+        $("pHist").innerHTML = mo.slice().reverse().map(m => `<div><span>${esc(monthName(m))}</span><span>${val(m)} ${esc(t.unit)}</span></div>`).join("");
+      };
+      c.appendChild(row);
+    }
+  }
+  if (data.records?.length) {
+    const c = card("Records", `${data.records.length} file${data.records.length === 1 ? "" : "s"}`);
+    for (const rec of data.records) {
+      const row = document.createElement("div"); row.className = "rec";
+      row.innerHTML = `<div><strong></strong><br><span class="src"></span></div><div><button>Open</button></div>`;
+      row.querySelector("strong").textContent = rec.name;
+      row.querySelector(".src").textContent = [rec.category, rec.doctor, rec.date && fmtD(dUTC(rec.date), { month: "short", day: "numeric", year: "numeric" }), rec.size && fmtSize(rec.size)].filter(Boolean).join(" · ");
+      const b = row.querySelector("button");
+      b.onclick = () => busy(b, "Opening...", async () => {
+        const parts = [];
+        for (let n = 0; n < rec.chunks; n++) { const r = await fetch(`/api/s/${id}/file/${rec.fid}/${n}`); if (!r.ok) throw new Error(await r.text() || "could not download"); parts.push(await open(K, new Uint8Array(await r.arrayBuffer()))); }
+        const url = URL.createObjectURL(new Blob(parts, { type: rec.type || "application/octet-stream" }));
+        if (/pdf|image/.test(rec.type)) window.open(url); else Object.assign(document.createElement("a"), { href: url, download: rec.name }).click();
+      });
+      c.appendChild(row);
+    }
+  }
+  v.insertAdjacentHTML("beforeend", `<p class="src" style="text-align:center">Shared from LifeChart. This page is read-only, and the link stops working on ${esc(expires)}.</p>`);
+}
 
 // A compact text version of the Apple data for the AI summary
 function appleForAI() {
@@ -1487,4 +1681,6 @@ function render() {
   if (!hits.length) list.innerHTML = "<p class='src'>No records yet.</p>";
 }
 $("search").oninput = render;
+if (location.hash.startsWith("#share=")) openShare();
+window.addEventListener("hashchange", () => { if (location.hash.startsWith("#share=")) openShare(); });
 </script></body></html>

@@ -45,6 +45,13 @@ async function clearVault(vault: string) {
 }
 
 const bad = (msg: string, status = 400) => new Response(msg, { status });
+const SHARE_ID = /^[A-Za-z0-9_-]{20,40}$/;
+async function deleteShare(id: string, vault: string) {
+  const s = store();
+  const { blobs } = await s.list({ prefix: `share/${id}/` });
+  await Promise.all(blobs.map(b => s.delete(b.key)));
+  if (HEX.test(vault)) await s.delete(`${vault}/shares/${id}`);
+}
 
 // ---------- AI summaries ----------
 // The browser unlocks a record and sends it here only when the user asks for a summary.
@@ -150,6 +157,23 @@ export default async (req: Request) => {
   const vault = req.headers.get("x-vault") ?? "";
   const token = req.headers.get("x-token") ?? "";
   const rtoken = req.headers.get("x-rtoken") ?? "";
+
+  // ---------- doctor share links: public, read-only ----------
+  // /api/s/:id and /api/s/:id/file/:fid/:n. Everything stored here is encrypted with a key that
+  // exists only in the link's #fragment, which browsers never send to the server.
+  if (route === "s" && SHARE_ID.test(parts[1] ?? "") && req.method === "GET") {
+    const id = parts[1], meta: any = await s.get(`share/${id}/meta`, { type: "json" });
+    if (!meta) return bad("This link has been turned off or doesn't exist.", 404);
+    if (Date.parse(meta.expires) < Date.now()) { await deleteShare(id, meta.vault); return bad("This link has expired.", 410); }
+    if (parts[2] === "file" && ID.test(parts[3] ?? "")) {
+      const n = Number(parts[4]); if (!Number.isInteger(n) || n < 0 || n > 999) return bad("Bad chunk");
+      const chunk = await s.get(`share/${id}/files/${parts[3]}/${n}`, { type: "arrayBuffer" });
+      return chunk === null ? bad("Not found", 404) : new Response(chunk, { headers: { "content-type": "application/octet-stream", "cache-control": "no-store" } });
+    }
+    const bundle = await s.get(`share/${id}/bundle`);
+    return bundle === null ? bad("Not found", 404) : new Response(bundle, { headers: { "cache-control": "no-store", "x-expires": meta.expires } });
+  }
+
   if (!HEX.test(vault)) return bad("Bad request");
 
   // Is there a working account for this email?
@@ -221,7 +245,7 @@ export default async (req: Request) => {
   if (route === "summarize" && req.method === "POST") return summarize(req);
 
   // Encrypted profile, record list and saved health summary
-  if (["profile", "index", "summary", "apple", "appleDaily", "manual"].includes(route)) {
+  if (["profile", "index", "summary", "apple", "appleDaily", "manual", "shareList"].includes(route)) {
     if (req.method === "GET") {
       const v = await s.get(`${vault}/${route}`);
       return v === null ? bad("Not found", 404) : new Response(v);
@@ -233,6 +257,35 @@ export default async (req: Request) => {
   }
 
   // Encrypted file chunks: /api/file/:id/:n
+  // ---------- doctor share links: owner side ----------
+  if (route === "share") {
+    const id = parts[1] ?? "";
+    if (req.method === "GET" && !id) { // the owner's links (just ids and dates; labels stay in the encrypted list)
+      const { blobs } = await s.list({ prefix: `${vault}/shares/` });
+      const out = [];
+      for (const b of blobs) { const m: any = await s.get(b.key, { type: "json" }); if (m) out.push({ id: b.key.split("/").pop(), expires: m.expires }); }
+      return Response.json(out);
+    }
+    if (!SHARE_ID.test(id)) return bad("Bad request");
+    const meta: any = await s.get(`share/${id}/meta`, { type: "json" });
+    if (meta && meta.vault !== vault) return bad("Not yours", 403);
+    if (req.method === "POST" && !parts[2]) { // create: the encrypted bundle and the expiry date
+      const b: any = await req.json().catch(() => null);
+      const exp = Date.parse(b?.expires);
+      if (meta || !b || typeof b.bundle !== "string" || b.bundle.length > 4500000 || !(exp > Date.now()) || exp > Date.now() + 366 * 864e5) return bad("Bad request");
+      const m = { vault, expires: new Date(exp).toISOString(), created: new Date().toISOString() };
+      await s.setJSON(`share/${id}/meta`, m); await s.set(`share/${id}/bundle`, b.bundle); await s.setJSON(`${vault}/shares/${id}`, { expires: m.expires });
+      return new Response("created");
+    }
+    if (req.method === "PUT" && parts[2] === "file" && ID.test(parts[3] ?? "") && meta) { // a shared copy of a record, re-encrypted for the link
+      const n = Number(parts[4]); if (!Number.isInteger(n) || n < 0 || n > 999) return bad("Bad chunk");
+      await s.set(`share/${id}/files/${parts[3]}/${n}`, await req.arrayBuffer());
+      return new Response("saved");
+    }
+    if (req.method === "DELETE") { await deleteShare(id, vault); return new Response("removed"); }
+    return bad("Not found", 404);
+  }
+
   if (route === "file" && ID.test(parts[1] ?? "")) {
     const base = `${vault}/files/${parts[1]}/`;
     if (req.method === "DELETE") {
